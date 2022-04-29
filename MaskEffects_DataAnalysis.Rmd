@@ -1,0 +1,3781 @@
+---
+title: "Mask Effects Data Analysis"
+output: html_notebook
+---
+
+Clears the environment before running the script:
+```{r}
+rm(list = ls())
+```
+
+# Packages
+```{r, echo = FALSE}
+library(tidyverse) # install.packages('tidyverse')
+library(xfun) # install.packages('xfun')
+library(remotes) # install.packages('remotes')
+library(autoscore) # xfun::install_github("TysonStanley/autoscore")
+library(readxl)
+library(SnowballC) # install.packages('SnowballC') # this is needed for autoscore
+library(corrr) # install.packages('corrr')
+library(ggpubr) # install.packages('ggpubr')
+library(rio) # install.packages('rio')
+library(DT) # install.packages('DT')
+library(cvms) # install.packages('cvms')
+library(ggdist) # install.packages('ggdist')
+library(lmerTest) # install.packages('lmerTest')
+library(performance) # install.packages('performance')
+library(emmeans) # install.packages('emmeans')
+library(sjPlot) # install.packages('sjPlot')
+library(rcartocolor) # install.packages('rcartocolor')
+library(gghalves) # install.packages('gghalves')
+library(ggalluvial) # install.packages("ggalluvial")
+library(ggridges) # install.packages("ggridges")
+library(gt) # install.packages('gt')
+```
+
+# Loading the data
+```{r}
+wordTrans <- read.csv("Data/Prepped Data/wordTranscriptions.csv", header = TRUE)
+sentenceRatings <- read.csv("Data/Prepped Data/sentenceRatings.csv")
+
+IPA_target <- read_xlsx("Data/Prepped Data/targetIPA.xlsx") %>%
+  dplyr::select(!"ID")
+
+IPA_errors <- read_xlsx("Data/Prepped Data/transErrorsIPA.xlsx") %>%
+  dplyr::mutate(IPA = sub(" ","",IPA, fixed = T),
+                IPA = gsub("(~~|&&)", "", IPA))
+
+MData <- read_xlsx("Data/Prepped Data/Moment Analyses.xlsx", sheet = "MData") %>%
+  dplyr::mutate(M1 = as.numeric(M1),
+                M2 = as.numeric(M2),
+                M3 = as.numeric(M3),
+                M4 = as.numeric(M4),
+                Manner = case_when(
+                  Word == "sip"|
+                  Word == "ship"|
+                  Word == "sigh"|
+                  Word == "fit"|
+                  Word == "feet"|
+                  Word == "shy" ~ "Fricative",
+                  TRUE ~ "Stop"),
+                Manner = as.factor(Manner)) %>%
+  dplyr::rename(SpeakerID = Speaker)
+
+MData_rel <- read_xlsx("Data/Prepped Data/Moment Analyses.xlsx", sheet = "Reliability") %>%
+  dplyr::mutate(M1 = as.numeric(M1),
+                M2 = as.numeric(M2),
+                M3 = as.numeric(M3),
+                M4 = as.numeric(M4),
+                M1.R = as.numeric(M1.R),
+                M2.R = as.numeric(M2.R),
+                M3.R = as.numeric(M3.R),
+                M4.R = as.numeric(M4.R)) %>%
+  dplyr::rename(SpeakerID = Speaker)
+
+VowelData <- read_xlsx("Data/Prepped Data/Vowel Analyses.xlsx", sheet = "Vowels") %>%
+  dplyr::select(!c(9,7)) %>%
+  dplyr::mutate(Condition = as.factor(Condition),
+                Condition = factor(Condition, levels = c("ConvNoMask", "ConvMask","ClearMask")),
+                SpeakerID = as.factor(SpeakerID),
+                Word = as.factor(Word),
+                Sound = as.factor(Sound))
+
+intensityRatio <- read_xlsx("Data/Prepped Data/Intensity Ratio Analysis.xlsx", sheet = "IntensityRatio") %>%
+  dplyr::select(Condition,Speaker,Word,CV_Ratio) %>%
+  dplyr::rename(SpeakerID = Speaker) %>%
+  dplyr::mutate(Condition = as.factor(Condition),
+                Condition = factor(Condition, levels = (c("ConvNoMask", "ConvMask","ClearMask"))),
+                SpeakerID = as.factor(SpeakerID),
+                Word = as.factor(Word),
+                Manner = case_when(
+                  Word == "sip"|
+                  Word == "ship"|
+                  Word == "sigh"|
+                  Word == "fit"|
+                  Word == "feet"|
+                  Word == "shy" ~ "Fricative",
+                  TRUE ~ "Stop"),
+                Manner = as.factor(Manner))
+
+listenerDemo <- read.csv("Data/Prepped Data/listenerDemo.csv") %>%
+  dplyr::select(!X) %>%
+  dplyr::mutate(ID = as.factor(ID))
+```
+
+# Reliability
+## Listener Reliability: Sentence
+```{r}
+
+print(paste("Prior to reliability checks, there were a total of ", nrow(as.data.frame(unique(sentenceRatings$ID))), " listeners.", sep = ""))
+
+# INTRA rater Reliability ----
+relSentence <- sentenceRatings %>%
+  dplyr::filter(!is.na(relVAS))
+
+relSentence_ad <- relSentence %>%
+  dplyr::mutate(ad = abs(VAS - relVAS)) %>%
+  group_by(ID) %>%
+  dplyr::summarise(ad = mean(ad))
+  
+sentenceRatings <- base::merge(sentenceRatings,relSentence_ad) %>%
+  dplyr::filter(ad < 20) %>%
+  dplyr::select(!ad)
+
+wordTrans <- base::merge(wordTrans,relSentence_ad) %>%
+  dplyr::filter(ad < 20) %>%
+  dplyr::select(!ad)
+
+print(paste("After removing unreliable listeners based on sentence ratings, there are  ",nrow(as.data.frame(unique(sentenceRatings$ID))), " listeners.", sep = ""))
+
+rm(relSentence_ad)
+```
+
+## Listener Reliability: Word
+```{r}
+relWord <- wordTrans %>%
+  dplyr::filter(!is.na(autoscore.R)) %>%
+  dplyr::select(ID,fileID,Response,Response.R) %>%
+  dplyr::rename(target = Response,
+                response = Response.R)
+
+
+suppressWarnings(relWordOutput <- autoscore::autoscore(relWord,
+                                             acceptable_df = acceptable_spellings,
+                                             plural_rule = TRUE,
+                                             plural_add_rule = TRUE,
+                                             tense_rule = TRUE,
+                                             tense_add_rule = TRUE,
+                                             a_the_rule = TRUE,
+                                             root_word_rule = TRUE,
+                                             double_letter_rule = TRUE,
+                                             suffix_rule = TRUE))
+
+relWord <- relWordOutput %>%
+  dplyr::rename(ID = id,
+                Response = target,
+                Response.R = response,
+                fileID = fileid)
+
+relCutOff <- .33 # .66
+
+relWord <- relWord %>%
+  group_by(ID) %>%
+  summarise(rel = sum(autoscore)/3) %>%
+  dplyr::filter(rel > relCutOff)
+
+sentenceRatings <- base::merge(sentenceRatings,relWord,all = T) %>%
+  dplyr::filter(rel > relCutOff) %>%
+  dplyr::select(!rel)
+
+wordTrans <- base::merge(wordTrans,relWord,all = T) %>%
+  dplyr::filter(rel > relCutOff) %>%
+  dplyr::select(!rel)
+
+print(paste("After removing unreliable listeners based on word transcriptions, there are ",nrow(as.data.frame(unique(wordTrans$ID)))," listeners.", sep = ""))
+
+rm(relCutOff, relWord, relWordOutput)
+
+listenerDemo %>%
+  dplyr::filter(ID %in% wordTrans$ID) %>%
+  dplyr::summarise(mean = mean(Q4),
+                   sd = sd(Q4))
+
+wordTrans %>%
+  dplyr::mutate(speakerID = as.factor(speakerID),
+                ID = as.factor(ID)) %>%
+  dplyr::group_by(speakerID) %>%
+  summarise(listener_n = NROW(unique(ID)))
+```
+
+## Moment Analysis Reliability
+```{r}
+MData_rel_firstRating <- MData_rel %>%
+  dplyr::select(SpeakerID,M1:M4) %>%
+  pivot_longer(cols = M1:M4,
+               names_to = "M",
+               values_to = "FirstRating") %>%
+  dplyr::mutate(rowNum = row_number())
+
+MData_rel_secondRating <- MData_rel %>%
+  dplyr::select(SpeakerID,M1.R:M4.R) %>%
+  dplyr::rename(M1 = M1.R,
+                M2 = M2.R,
+                M3 = M3.R,
+                M4 = M4.R) %>%
+    pivot_longer(cols = M1:M4,
+               names_to = "M",
+               values_to = "SecondRating")  %>%
+  dplyr::mutate(rowNum = row_number())
+
+MData_rel <- base::merge(MData_rel_firstRating,MData_rel_secondRating) %>%
+  dplyr::mutate(error = abs(FirstRating - SecondRating),
+                M = as.factor(M))
+
+MData_rel %>%
+  group_by(M) %>%
+  dplyr::summarise(M = mean(error),
+                   SD = sd(error))
+
+rm(MData_rel_firstRating,MData_rel_secondRating)
+
+relR <- stats::cor(MData_rel$FirstRating,MData_rel$SecondRating, method = "pearson")
+
+print(paste("The correlation between the measurer's first and second rating was r = ",round(relR,digits = 3), sep = ""))
+```
+
+# Analysis
+
+## Sentence Ratings
+```{r}
+sentenceRatings <- sentenceRatings %>%
+  dplyr::mutate(condition = as.factor(condition)) %>%
+  dplyr::mutate(ID = as.factor(ID)) %>%
+  dplyr::mutate(condition = fct_relevel(condition, levels = "ClearMask", "ConvMask", "ConvNoMask")) %>%
+  group_by(ID,speakerID,condition) %>%
+  summarize(VAS = mean(VAS))
+
+# Prints Datatable
+DT::datatable(sentenceRatings %>%
+           group_by(speakerID,condition) %>%
+           summarize(VAS = mean(VAS, na.rm =T),.groups = "rowwise"))
+
+# Line Plot
+linePlot_sentRatings <-
+  ggplot(data = sentenceRatings %>%
+           group_by(speakerID,condition) %>%
+           summarize(VAS = mean(VAS, na.rm =T),.groups = "rowwise")
+         ) +
+  aes(x = condition, 
+      y = VAS,
+      group = speakerID,
+      color = speakerID) +
+  geom_point() +
+  geom_line() +
+  theme_classic() +
+  xlab("") +
+  ylab("VAS Intelligibility") +
+  ggtitle("Sentence Inteligibility Ratings") +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  labs(color='Speaker ID') 
+linePlot_sentRatings
+
+ggsave("Data/Plots/linePlot_sentence.png", plot = last_plot(), height = 5, width = 5, units = "in")
+
+
+sentenceRatings_bySpeaker <- sentenceRatings %>%
+  group_by(speakerID, condition) %>%
+  summarize(VAS_mean = mean(VAS),
+            VAS_sd = sd(VAS))
+```
+
+## Word Transription
+```{r}
+
+wordTrans <- wordTrans %>%
+  dplyr::mutate(condition = as.factor(condition)) %>%
+  dplyr::mutate(condition = fct_relevel(condition, levels = "ClearMask", "ConvMask", "ConvNoMask"))
+  
+words_bySpeaker <- wordTrans %>%
+  group_by(speakerID,condition) %>%
+  dplyr::summarize(sum = sum(autoscore),n = n(),.groups = "rowwise") %>%
+  dplyr::mutate(transAcc = (sum/n)*100) %>%
+  dplyr::select(!c(sum,n))
+
+wordTrans_bySpeakerListener <- wordTrans %>%
+  group_by(ID,speakerID,condition) %>%
+  dplyr::summarize(sum = sum(autoscore),n = n(),.groups = "rowwise") %>%
+  dplyr::mutate(transAcc = (sum/n)*100) %>%
+  dplyr::select(!c(sum,n))
+  
+DT::datatable(words_bySpeaker)
+
+linePlot_wordAccuracy <- words_bySpeaker %>%
+  ggplot() +
+  aes(x = condition, 
+      y = transAcc,
+      group = speakerID,
+      color = speakerID) +
+  geom_point() +
+  geom_line() +
+  theme_classic() +
+  xlab("") +
+  ylab("Words Correct (%)") +
+  ggtitle("Word Transcription Accuracy") +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  labs(color='Speaker ID') 
+linePlot_wordAccuracy
+
+ggsave("Data/Plots/linePlot_word.png", plot = last_plot(), height = 5, width = 5, units = "in")
+```
+# Intelligibility Models 
+```{r}
+intData <- base::merge(sentenceRatings, wordTrans_bySpeakerListener) %>%
+  dplyr::mutate(speakerID = as.factor(speakerID),
+                condition = factor(condition, levels = c("ConvNoMask", 
+                                                         "ConvMask", 
+                                                         "ClearMask"))) %>%
+  dplyr::rename(sentInt = VAS,
+                wordInt = transAcc,
+                Condition = condition,
+                SpeakerID = speakerID)
+```
+
+## Sentence Int Models
+```{r}
+TEST <- intData %>%
+  dplyr::group_by(SpeakerID) %>%
+  dplyr::mutate(sentInt_z = abs(as.vector(scale(sentInt)))) %>%
+  dplyr::ungroup() %>%
+  dplyr::mutate(sentInt = ifelse(sentInt_z > 3,NA,sentInt))
+
+sentDifference <- intData %>%
+  dplyr::select(!wordInt) %>%
+  pivot_wider(names_from = Condition,
+              values_from = sentInt) %>%
+  dplyr::mutate(ConvNoMask_ConvMask =  ConvMask - ConvNoMask) %>%
+  dplyr::mutate(ConvNoMask_ClearMask =  ClearMask - ConvNoMask) %>%
+  dplyr::mutate(ConvMask_ClearMask =  ClearMask - ConvMask) %>%
+  dplyr::select(!c(ConvMask,ConvNoMask,ClearMask)) %>%
+  pivot_longer(cols = c(ConvNoMask_ConvMask,ConvNoMask_ClearMask,ConvMask_ClearMask), 
+               names_to = "conditionDiff",
+               values_to = "sentInt") %>%
+  dplyr::mutate(conditionDiff = as.factor(conditionDiff))
+                
+
+p <- stats::shapiro.test(intData$wordInt)
+stats::shapiro.test(log(intData$sentInt))
+library(car)
+
+car::qqPlot(intData$sentInt)
+car::qqPlot(car::logit(sentDifference$sentInt+100))
+```
+
+### m0
+```{r}
+sentInt_m0 <- lmerTest::lmer(sentInt ~ 1 + (1|SpeakerID), data = intData)
+summary(sentInt_m0)
+
+performance::icc(sentInt_m0)
+```
+
+### m1
+```{r}
+sentInt_m1 <- lmerTest::lmer(sentInt ~ 1 + Condition + (1|SpeakerID), data = intData)
+summary(sentInt_m1)
+
+gammaModel <- glmer(sentInt ~ 1 + Condition + (1|SpeakerID), family = Gamma(link="log"),data = intData)
+summary(gammaModel)
+confint(gammaModel)
+
+4.510346 + (1.96*0.027007)
+4.510346 - (1.96*0.027007)
+
+-0.059814 + (1.96*0.019831)
+-0.059814 - (1.96*0.019831)
+
+-0.009313 + (1.96*0.019831)
+-0.009313 - (1.96*0.019831)
+
+emmeans::lsmeans(gammaModel, pairwise~Condition, adjust="tukey")
+
+plot(resid(testModel, type = "pearson") ~ fitted(testModel))
+qqnorm(resid(testModel, type = "pearson"))
+qqline(resid(testModel, type = "pearson"))
+
+sum_sentInt_m1 <- summary(sentInt_m1)
+
+
+emmeans::lsmeans(sentInt_m1, pairwise~Condition, adjust="tukey")
+
+performance::check_singularity(sentInt_m1)
+performance::check_normality(sentInt_m1)
+performance::check_model(sentInt_m1, theme = "ggplot2::theme_classic")
+```
+
+## Word Int Models
+### m0
+```{r}
+wordInt_m0 <- lmerTest::lmer(wordInt ~ 1 + (1|SpeakerID), data = intData)
+summary(wordInt_m0)
+
+performance::icc(wordInt_m0)
+```
+
+### m1
+```{r}
+wordInt_m1 <- lmerTest::lmer(wordInt ~ 1 + Condition + (1|SpeakerID), data = intData)
+summary(wordInt_m1)
+
+emmeans::lsmeans(wordInt_m1, pairwise~Condition, adjust="tukey")
+
+performance::check_singularity(wordInt_m1)
+```
+### Table
+```{r}
+table <- sjPlot::tab_model(gammaModel, wordInt_m1, file = "Data/Tables/IntModels.html",
+                           #show.ci = T,
+                           #show.std = T,
+                           show.se = F,
+                           show.df = F,
+                           show.stat = T,
+                           show.reflvl = TRUE
+                           #col.order = c("est","ci", "stat", "p"),
+                           )
+table
+
+sjPlot::tab_model(gammaModel, file = "Data/Tables/VASModel.html",
+                           #show.ci = T,
+                           #show.std = T,
+                           show.se = F,
+                           show.df = F,
+                           show.stat = T,
+                           show.reflvl = TRUE
+                           #col.order = c("est","ci", "stat", "p"),
+                           )
+```
+
+## Plot
+```{r}
+library(extrafont) # install.packages('extrafont')
+
+## custom colors
+my_pal <- rcartocolor::carto_pal(n = 7, name = "Burg")[c(7, 5, 3, 2, 4)]
+
+## Theme ----
+theme_set(theme_void(base_family = "Roboto"))
+
+theme_update(
+  axis.text.x = element_text(color = "black", face = "bold", size = 26, 
+                             margin = margin(t = 6)),
+  axis.text.y = element_text(color = "black", size = 22, hjust = 1, 
+                             margin = margin(r = 6), family = "Roboto Mono"),
+  axis.line.x = element_line(color = "black", size = 1),
+  panel.grid.major.y = element_line(color = "grey90", size = .6),
+  plot.background = element_rect(fill = "white", color = "white"),
+  plot.margin = margin(rep(20, 4))
+)
+
+sentDifference <- sentenceRatings %>%
+  pivot_wider(names_from = condition,
+              values_from = VAS) %>%
+  dplyr::mutate(ConvNoMask_ConvMask =  ConvMask - ConvNoMask) %>%
+  dplyr::mutate(ConvNoMask_ClearMask =  ClearMask - ConvNoMask) %>%
+  dplyr::mutate(ConvMask_ClearMask =  ClearMask - ConvMask) %>%
+  dplyr::select(!c(ConvMask,ConvNoMask,ClearMask)) %>%
+  pivot_longer(cols = c(ConvNoMask_ConvMask,ConvNoMask_ClearMask,ConvMask_ClearMask), 
+               names_to = "conditionDiff",
+               values_to = "VASDiff") %>%
+  dplyr::mutate(conditionDiff = as.factor(conditionDiff))
+
+wordDifference <- wordTrans_bySpeakerListener %>%
+  pivot_wider(names_from = condition,
+              values_from = transAcc) %>%
+  dplyr::mutate(ConvNoMask_ConvMask =  ConvMask - ConvNoMask) %>%
+  dplyr::mutate(ConvNoMask_ClearMask =  ClearMask - ConvNoMask) %>%
+  dplyr::mutate(ConvMask_ClearMask =  ClearMask - ConvMask) %>%
+  dplyr::select(!c(ConvMask,ConvNoMask,ClearMask)) %>%
+  pivot_longer(cols = c(ConvNoMask_ConvMask,ConvNoMask_ClearMask,ConvMask_ClearMask), 
+               names_to = "conditionDiff",
+               values_to = "transAccDiff")
+
+contrastLabels <- c("Conversational Mask-on → Clear Mask-on",
+                    "Conversational Mask-off → Clear Mask-on",
+                    "Conversational Mask-off → Conversational Mask-on")
+
+intDifference <- rbind(wordDifference %>%
+                         dplyr::mutate(intType = "Word Transcriptions (% Accuracy)") %>%
+                         dplyr::rename(intRating = transAccDiff),
+                       sentDifference %>%
+                         dplyr::mutate(intType = "Sentence Ratings (VAS)") %>%
+                         dplyr::rename(intRating = VASDiff)) %>%
+  dplyr::mutate(intType = as.factor(intType),
+                conditionDiff = case_when(
+                  conditionDiff == "ConvMask_ClearMask" ~ "Conversational, Mask-on →\nClear, Mask-on     ",
+                  conditionDiff == "ConvNoMask_ClearMask" ~ "Conversational, Mask-off →\nClear, Mask-on     ",
+                  conditionDiff == "ConvNoMask_ConvMask" ~ "Conversational, Mask-off →\nConversational, Mask-on     "
+                ),
+                conditionDiff = factor(conditionDiff, levels = c("Conversational, Mask-on →\nClear, Mask-on     ",
+                                                                 "Conversational, Mask-off →\nClear, Mask-on     ",
+                                                                 "Conversational, Mask-off →\nConversational, Mask-on     ")),
+                ID = as.factor(ID),
+                speakerID = as.factor(speakerID))
+
+# Difference Plots: Sentence Both ---- 
+intPlot <- ggplot(data = intDifference,
+       aes(x = conditionDiff,
+           y = intRating,
+           color = conditionDiff,
+           fill = conditionDiff)) + 
+  ggdist::stat_halfeye(
+    aes(alpha = stat(y < 0)),
+    adjust = 1.8, 
+    width = .6, 
+    .width = 0, 
+    justification = -.2,
+    point_colour = NA,
+    outline_bars = T
+  ) + 
+  scale_alpha_discrete(range = c(.4,.9), guide = "none") +
+  geom_boxplot(
+    width = .15, 
+    outlier.shape = NA,
+    fill = "white"
+  ) +
+  ## add justified jitter from the {gghalves} package
+  #gghalves::geom_half_point(
+    ## draw jitter on the left
+    #side = "l", 
+    ## control range of jitter
+    #range_scale = .4, 
+    ## add some transparency
+    #alpha = .3
+  #) +
+  geom_hline(yintercept = 0, alpha = 0.25) +
+  coord_cartesian() +
+  coord_flip(ylim = c(-25, 25), clip = "on") +
+  scale_color_manual(values = my_pal, guide = "none") +
+  scale_fill_manual(values = my_pal, guide = "none") +
+  #labs(title = "Sentence Ratings") +
+  ylab("Intelligibility Change") +
+  xlab("") +
+  theme_classic() +
+  facet_wrap(~intType, scales = "free_x") +
+  theme(
+    plot.title = element_text(hjust = 0.5),
+    text = element_text(size = 13, family = "Arial Bold"))
+
+intPlot
+
+
+#ggpubr::ggarrange(sentencePlot,wordPlot, ncol = 2, nrow = 1)
+ggsave("Data/Plots/IntFigure.png", plot = last_plot(),height = 4, width = 8, units = "in", scale = 1)
+
+```
+
+# Consonant Analysis
+## Moment Analysis Models
+```{r}
+M_modelData <- MData %>%
+  tidyr::pivot_longer(cols = M1:M4,
+                      names_to = "M",
+                      values_to = "M_Value") %>%
+  dplyr::mutate(M = as.factor(M),
+                SpeakerID = as.factor(SpeakerID),
+                Word = as.factor(Word),
+                Condition = as.factor(Condition),
+                Condition = factor(Condition, levels = c("ConvNoMask", 
+                                                         "ConvMask", 
+                                                         "ClearMask")))
+```
+
+### m0
+```{r}
+mData_m0 <- lmerTest::lmer(M_Value ~ 1 + (1|SpeakerID), data = M_modelData)
+summary(mData_m0)
+
+performance::icc(mData_m0)
+```
+
+### m1
+```{r}
+mData_m1 <- lmerTest::lmer(M_Value ~ 1 + M + (1|SpeakerID), data = M_modelData)
+summary(mData_m1)
+
+performance::check_singularity(mData_m1)
+```
+
+### m2
+```{r}
+mData_m2 <- lmerTest::lmer(M_Value ~ 1 + M*Manner + (1|SpeakerID), data = M_modelData)
+summary(mData_m2)
+
+performance::check_singularity(mData_m2)
+```
+
+### m3
+```{r}
+mData_m3 <- lmerTest::lmer(M_Value ~ 1 + M*Manner + M*Condition + (1|SpeakerID), data = M_modelData)
+summary(mData_m3)
+
+performance::check_singularity(mData_m3)
+```
+
+### m4
+```{r}
+mData_m4 <- lmerTest::lmer(M_Value ~ 1 + M*Manner + (1|SpeakerID), data = M_modelData)
+summary(mData_m4)
+
+performance::check_singularity(mData_m4)
+```
+
+### Table
+```{r}
+table <- sjPlot::tab_model(mData_m4, file = "Data/Tables/mModel.html",
+                           show.se = F,
+                           show.df = F,
+                           show.stat = T,
+                           show.reflvl = TRUE)
+table
+```
+
+### Plot
+```{r}
+# Plot
+## custom colors
+my_pal <- rcartocolor::carto_pal(n = 7, name = "Burg")[c(7, 5, 3, 2, 4)]
+
+momentRidgeline <- ggplot() +
+  ggridges::geom_density_ridges(data = M_modelData,
+                          aes(x = M_Value, y = M, fill = Manner, color = Manner),
+                      alpha = .7) +
+  ggridges::theme_ridges() + 
+  theme(legend.position = "right") +
+  coord_cartesian(xlim = c(-5,15)) +
+  scale_y_discrete(limits=rev) +
+  scale_color_manual(values = c(my_pal[1],my_pal[4]), guide = "legend") +
+  scale_fill_manual(values = c(my_pal[1],my_pal[4]), guide = "legend") +
+  labs(x = "", y = "", colour="Manner", fill="Manner") 
+momentRidgeline
+
+ggsave("Data/Plots/Distribution_M1_4.png", plot = last_plot(),height = 5, width = 8, units = "in")
+```
+
+## Intensity Ratio Model
+
+### m0
+```{r}
+intensityRatio_m0 <- lmerTest::lmer(CV_Ratio ~ 1 + (1|SpeakerID), data = intensityRatio)
+summary(intensityRatio_m0)
+
+performance::icc(intensityRatio_m0)
+```
+
+### m1
+```{r}
+intensityRatio_m1 <- lmerTest::lmer(CV_Ratio ~ 1 + Condition + (1|SpeakerID), data = intensityRatio)
+summary(intensityRatio_m1)
+
+performance::check_singularity(intensityRatio_m1)
+```
+
+### m2
+```{r}
+intensityRatio_m2 <- lmerTest::lmer(CV_Ratio ~ 1 + Condition + Manner + (1|SpeakerID), data = intensityRatio)
+summary(intensityRatio_m2)
+
+performance::check_singularity(intensityRatio_m2)
+```
+
+### m3
+```{r}
+intensityRatio_m3 <- lmerTest::lmer(CV_Ratio ~ 1 + Condition + Manner + (1|SpeakerID), data = intensityRatio)
+summary(intensityRatio_m3)
+
+emmeans::lsmeans(intensityRatio_m3, pairwise~Condition, adjust="tukey")
+
+performance::check_singularity(intensityRatio_m3)
+```
+### Table
+```{r}
+table <- sjPlot::tab_model(intensityRatio_m3, file = "Data/Tables/intensityModel.html",
+                           show.se = F,
+                           show.df = F,
+                           show.stat = T,
+                           show.reflvl = TRUE)
+table
+```
+
+# Vowel Analysis
+## Duration
+### m0
+```{r}
+duration_m0 <- lmerTest::lmer(Duration ~ 1 + (1|SpeakerID), data = VowelData)
+summary(duration_m0)
+
+performance::icc(duration_m0)
+```
+### m1
+```{r}
+duration_m1 <- lmerTest::lmer(Duration ~ 1 + Condition + (1|SpeakerID), data = VowelData)
+summary(duration_m1)
+
+emmeans::lsmeans(duration_m1, pairwise~Condition, adjust="tukey")
+
+performance::check_singularity(duration_m1)
+```
+
+## F1
+### m0
+```{r}
+F1_m0 <- lmerTest::lmer(F1 ~ 1 + (1|SpeakerID), data = VowelData)
+summary(F1_m0)
+
+performance::icc(F1_m0)
+```
+
+### m1
+```{r}
+F1_m1 <- lmerTest::lmer(F1 ~ 1 + Condition + Sound + (1|SpeakerID), data = VowelData)
+summary(F1_m1)
+
+emmeans::lsmeans(F1_m1, pairwise~Condition, adjust="tukey")
+
+performance::check_singularity(F1_m1)
+```
+
+## F2
+### m0
+```{r}
+F2_m0 <- lmerTest::lmer(F2 ~ 1 + (1|SpeakerID), data = VowelData)
+summary(F2_m0)
+
+performance::icc(F2_m0)
+```
+
+### m1
+```{r}
+F2_m1 <- lmerTest::lmer(F2 ~ 1 + Sound + (1|SpeakerID), data = VowelData)
+summary(F2_m1)
+
+#emmeans::lsmeans(F2_m1, pairwise~Condition, adjust="tukey")
+
+performance::check_singularity(F2_m1)
+```
+
+## Ratio
+### m0
+```{r}
+Ratio_m0 <- lmerTest::lmer(Ratio ~ 1 + (1|SpeakerID), data = VowelData)
+summary(Ratio_m0)
+
+performance::icc(Ratio_m0)
+```
+
+### m1
+```{r}
+Ratio_m1 <- lmerTest::lmer(Ratio ~ 1 + Sound + (1|SpeakerID), data = VowelData)
+summary(Ratio_m1)
+
+emmeans::lsmeans(Ratio_m1, pairwise~Sound, adjust="tukey")
+
+performance::check_singularity(Ratio_m1)
+```
+
+## Table
+```{r}
+table <- sjPlot::tab_model(duration_m1,
+                           F1_m1,
+                           F2_m1,
+                           Ratio_m1,
+                           file = "Data/Tables/AcousticModels.html",
+                           #show.std = T,
+                           show.se = F,
+                           show.df = F,
+                           show.stat = T,
+                           show.reflvl = TRUE)
+table
+```
+
+## Error Analysis
+```{r}
+errorCount_byWord <- wordTrans %>%
+  group_by(Target) %>%
+  dplyr::summarize(sum = sum(autoscore),n = n(),.groups = "rowwise") %>%
+  dplyr::mutate(wordAcc = (sum/n)*100) %>%
+  dplyr::select(Target,wordAcc)
+
+DT::datatable(errorCount_byWord)
+
+errorCount_byCondition <- wordTrans %>%
+  group_by(condition) %>%
+  dplyr::summarize(sum = sum(autoscore),n = n(),.groups = "rowwise") %>%
+  dplyr::mutate(wordAcc = (sum/n)*100) %>%
+  dplyr::select(condition,wordAcc)
+
+DT::datatable(errorCount_byCondition)
+
+errorCount_byWordCondition <- wordTrans %>%
+  group_by(Target,condition) %>%
+  dplyr::summarize(sum = sum(autoscore),n = n(),.groups = "rowwise") %>%
+  dplyr::mutate(wordAcc = (sum/n)*100) %>%
+  dplyr::select(Target, condition,wordAcc)
+
+# DT::datatable(errorCount_byWordCondition)
+
+rm(errorCount_byWord,errorCount_byCondition,errorCount_byWordCondition)
+```
+
+## Analyzing error structure
+```{r}
+IPA_errors <- IPA_errors %>%
+  dplyr::mutate(C1 = "",
+                V = "",
+                C2 = "",
+                Structure = IPA) %>%
+  dplyr::mutate(Structure = gsub("s","C",Structure,fixed = T)) %>%
+  dplyr::mutate(Structure = gsub("z","C",Structure,fixed = T)) %>%
+  dplyr::mutate(Structure = gsub("f","C",Structure,fixed = T)) %>%
+  dplyr::mutate(Structure = gsub("v","C",Structure,fixed = T)) %>%
+  dplyr::mutate(Structure = gsub("θ","C",Structure,fixed = T)) %>%
+  dplyr::mutate(Structure = gsub("ð","C",Structure,fixed = T)) %>%
+  dplyr::mutate(Structure = gsub("t","C",Structure,fixed = T)) %>%
+  dplyr::mutate(Structure = gsub("d","C",Structure,fixed = T)) %>%
+  dplyr::mutate(Structure = gsub("p","C",Structure,fixed = T)) %>%
+  dplyr::mutate(Structure = gsub("b","C",Structure,fixed = T)) %>%
+  dplyr::mutate(Structure = gsub("g","C",Structure,fixed = T)) %>%
+  dplyr::mutate(Structure = gsub("k","C",Structure,fixed = T)) %>%
+  dplyr::mutate(Structure = gsub("h","C",Structure,fixed = T)) %>%
+  dplyr::mutate(Structure = gsub("ʃ","C",Structure,fixed = T)) %>%
+  dplyr::mutate(Structure = gsub("ʧ","C",Structure,fixed = T)) %>%
+  dplyr::mutate(Structure = gsub("ʤ","C",Structure,fixed = T)) %>%
+  dplyr::mutate(Structure = gsub("l","C",Structure,fixed = T)) %>%
+  dplyr::mutate(Structure = gsub("j","C",Structure,fixed = T)) %>%
+  dplyr::mutate(Structure = gsub("w","C",Structure,fixed = T)) %>%
+  dplyr::mutate(Structure = gsub("r","C",Structure,fixed = T)) %>%
+  dplyr::mutate(Structure = gsub("n","C",Structure,fixed = T)) %>%
+  dplyr::mutate(Structure = gsub("m","C",Structure,fixed = T)) %>%
+  dplyr::mutate(Structure = gsub("ŋ","C",Structure,fixed = T)) %>%
+  # Vowels
+    dplyr::mutate(Structure = gsub("aɪ","VV",Structure,fixed = T)) %>%
+    dplyr::mutate(Structure = gsub("aʊ","VV",Structure,fixed = T)) %>%
+    dplyr::mutate(Structure = gsub("eɪ","VV",Structure,fixed = T)) %>%
+    dplyr::mutate(Structure = gsub("oʊ","VV",Structure,fixed = T)) %>%
+    dplyr::mutate(Structure = gsub("æ","V",Structure,fixed = T)) %>%
+    dplyr::mutate(Structure = gsub("ɔ","V",Structure,fixed = T)) %>%
+    dplyr::mutate(Structure = gsub("ə","V",Structure,fixed = T)) %>%
+    dplyr::mutate(Structure = gsub("ʊ","V",Structure,fixed = T)) %>%
+    dplyr::mutate(Structure = gsub("u","V",Structure,fixed = T)) %>%
+    dplyr::mutate(Structure = gsub("i","V",Structure,fixed = T)) %>%
+    dplyr::mutate(Structure = gsub("ɪ","V",Structure,fixed = T)) %>%
+    dplyr::mutate(Structure = gsub("ɛ","V",Structure,fixed = T)) %>%
+    dplyr::mutate(Structure = gsub("ɜ","V",Structure,fixed = T)) %>%
+    dplyr::mutate(Structure = gsub("ʌ","V",Structure,fixed = T)) %>%
+    dplyr::mutate(Structure = gsub("ɑ","V",Structure,fixed = T)) %>%
+    dplyr::mutate(Structure = gsub("(~~|&&)|[^a-zA-Z' ]", "\\1", Structure))
+
+IPA_errors <- IPA_errors %>%
+  dplyr::mutate(IPA = gsub("'", "\\1", IPA)) %>%
+  dplyr::mutate(IPA = gsub("ˈ", "\\1", IPA)) %>%
+  # CVC
+  dplyr::mutate(C1 = ifelse(Structure == "CVC", substr(IPA,1,1),C1)) %>%
+  dplyr::mutate(V = ifelse(Structure == "CVC", substr(IPA,2,2),V)) %>%
+  dplyr::mutate(C2 = ifelse(Structure == "CVC", substr(IPA,3,3),C2)) %>%
+  # CVCC
+  dplyr::mutate(C1 = ifelse(Structure == "CVCC", substr(IPA,1,1),C1)) %>%
+  dplyr::mutate(V = ifelse(Structure == "CVCC", substr(IPA,2,2),V)) %>%
+  dplyr::mutate(C2 = ifelse(Structure == "CVCC", substr(IPA,3,4),C2)) %>%
+  # V
+  dplyr::mutate(V = ifelse(Structure == "V", substr(IPA,1,1),V)) %>%
+  # VCC
+  dplyr::mutate(V = ifelse(Structure == "VCC", substr(IPA,1,1),V)) %>%
+  dplyr::mutate(C2 = ifelse(Structure == "VCC", substr(IPA,2,3),C2)) %>%
+  # VC
+  dplyr::mutate(V = ifelse(Structure == "VC", substr(IPA,1,1),V)) %>%
+  dplyr::mutate(C2 = ifelse(Structure == "VC", substr(IPA,2,2),C2)) %>%
+  # CV
+  dplyr::mutate(C1 = ifelse(Structure == "CV", substr(IPA,1,1),C1)) %>%
+  dplyr::mutate(V = ifelse(Structure == "CV", substr(IPA,2,2),V)) %>%
+  # CC
+  dplyr::mutate(C1 = ifelse(Structure == "CC", substr(IPA,1,1),C1)) %>%
+  dplyr::mutate(C2 = ifelse(Structure == "CC", substr(IPA,2,2),C2)) %>%
+  # C
+  dplyr::mutate(C1 = ifelse(Structure == "C", substr(IPA,1,1),C1)) %>%
+  # CCVC
+  dplyr::mutate(C1 = ifelse(Structure == "CCVC", substr(IPA,1,2),C1)) %>%
+  dplyr::mutate(V = ifelse(Structure == "CCVC", substr(IPA,3,3),V)) %>%
+  dplyr::mutate(C2 = ifelse(Structure == "CCVC", substr(IPA,4,4),C2)) %>%
+  # CVCVC
+  dplyr::mutate(C1 = ifelse(Structure == "CVCVC", substr(IPA,1,1),C1)) %>%
+  dplyr::mutate(V = ifelse(Structure == "CVCVC", substr(IPA,2,2),V)) %>%
+  dplyr::mutate(C2 = ifelse(Structure == "CVCVC", substr(IPA,3,3),C2)) %>%
+  # CCVCC
+  dplyr::mutate(C1 = ifelse(Structure == "CCVCC", substr(IPA,1,2),C1)) %>%
+  dplyr::mutate(V = ifelse(Structure == "CCVCC", substr(IPA,3,3),V)) %>%
+  dplyr::mutate(C2 = ifelse(Structure == "CCVCC", substr(IPA,4,5),C2)) %>%
+  # VCC
+  dplyr::mutate(V = ifelse(Structure == "VCC", substr(IPA,1,1),V)) %>%
+  dplyr::mutate(C2 = ifelse(Structure == "VCC", substr(IPA,2,3),C2)) %>%
+  # CCVVC
+  dplyr::mutate(C1 = ifelse(Structure == "CCVVC", substr(IPA,1,2),C1)) %>%
+  dplyr::mutate(V = ifelse(Structure == "CCVVC", substr(IPA,3,4),V)) %>%
+  dplyr::mutate(C2 = ifelse(Structure == "CCVVC", substr(IPA,5,5),C2)) %>%
+  # CCVCVC
+  dplyr::mutate(C1 = ifelse(Structure == "CCVCVC", substr(IPA,1,2),C1)) %>%
+  dplyr::mutate(V = ifelse(Structure == "CCVCVC", substr(IPA,3,3),V)) %>%
+  dplyr::mutate(C2 = ifelse(Structure == "CCVCVC", substr(IPA,4,4),C2)) %>%
+  # CVVC
+  dplyr::mutate(C1 = ifelse(Structure == "CVVC", substr(IPA,1,1),C1)) %>%
+  dplyr::mutate(V = ifelse(Structure == "CVVC", substr(IPA,2,3),V)) %>%
+  dplyr::mutate(C2 = ifelse(Structure == "CVVC", substr(IPA,4,4),C2)) %>%
+  # CCV
+  dplyr::mutate(C1 = ifelse(Structure == "CCV", substr(IPA,1,2),C1)) %>%
+  dplyr::mutate(V = ifelse(Structure == "CCV", substr(IPA,3,3),V)) %>%
+  # CVCCC
+  dplyr::mutate(C1 = ifelse(Structure == "CVCCC", substr(IPA,1,1),C1)) %>%
+  dplyr::mutate(V = ifelse(Structure == "CVCCC", substr(IPA,2,2),V)) %>%
+  dplyr::mutate(C2 = ifelse(Structure == "CVCCC", substr(IPA,3,5),C2)) %>%
+  # CCCVC
+  dplyr::mutate(C1 = ifelse(Structure == "CCCVC", substr(IPA,1,3),C1)) %>%
+  dplyr::mutate(V = ifelse(Structure == "CCCVC", substr(IPA,4,4),V)) %>%
+  dplyr::mutate(C2 = ifelse(Structure == "CCCVC", substr(IPA,5,5),C2)) %>%
+  # VCVCC
+  dplyr::mutate(C1 = ifelse(Structure == "VCVCC", substr(IPA,2,2),C1)) %>%
+  dplyr::mutate(V = ifelse(Structure == "VCVCC", substr(IPA,3,3),V)) %>%
+  dplyr::mutate(C2 = ifelse(Structure == "VCVCC", substr(IPA,4,5),C2)) %>%
+  # CVCV
+  dplyr::mutate(C1 = ifelse(Structure == "CVCV", substr(IPA,1,1),C1)) %>%
+  dplyr::mutate(V = ifelse(Structure == "CVCV", substr(IPA,2,2),V)) %>%
+  dplyr::mutate(C2 = ifelse(Structure == "CVCV", substr(IPA,3,3),C2)) %>%
+  # CVV
+  dplyr::mutate(C1 = ifelse(Structure == "CVV", substr(IPA,1,1),C1)) %>%
+  dplyr::mutate(V = ifelse(Structure == "CVV", substr(IPA,2,3),V)) %>%
+  # CVCVCCC
+  dplyr::mutate(C1 = ifelse(Structure == "CVCVCCC", substr(IPA,1,1),C1)) %>%
+  dplyr::mutate(V = ifelse(Structure == "CVCVCCC", substr(IPA,2,2),V)) %>%
+  dplyr::mutate(C2 = ifelse(Structure == "CVCVCCC", substr(IPA,3,3),C2)) %>%
+  # CVCVCC
+  dplyr::mutate(C1 = ifelse(Structure == "CVCVCC", substr(IPA,1,1),C1)) %>%
+  dplyr::mutate(V = ifelse(Structure == "CVCVCC", substr(IPA,2,2),V)) %>%
+  dplyr::mutate(C2 = ifelse(Structure == "CVCVCC", substr(IPA,3,3),C2)) %>%
+  # VCVC
+  dplyr::mutate(C1 = ifelse(Structure == "VCVC", substr(IPA,2,2),C1)) %>%
+  dplyr::mutate(V = ifelse(Structure == "VCVC", substr(IPA,3,3),V)) %>%
+  dplyr::mutate(C2 = ifelse(Structure == "VCVC", substr(IPA,4,4),C2)) %>%
+  # CVCCVC
+  dplyr::mutate(C1 = ifelse(Structure == "CVCCVC", substr(IPA,1,1),C1)) %>%
+  dplyr::mutate(V = ifelse(Structure == "CVCCVC", substr(IPA,2,2),V)) %>%
+  dplyr::mutate(C2 = ifelse(Structure == "CVCCVC", substr(IPA,3,4),C2)) %>%
+  # VVC
+  dplyr::mutate(V = ifelse(Structure == "VVC", substr(IPA,1,2),V)) %>%
+  dplyr::mutate(C2 = ifelse(Structure == "VVC", substr(IPA,3,3),C2)) %>%
+  # CCVVVC
+  dplyr::mutate(C1 = ifelse(Structure == "CCVVVC", substr(IPA,1,2),C1)) %>%
+  dplyr::mutate(V = ifelse(Structure == "CCVVVC", substr(IPA,3,5),V)) %>%
+  dplyr::mutate(C2 = ifelse(Structure == "CCVVVC", substr(IPA,6,6),C2)) %>%
+  # CVVVC
+  dplyr::mutate(C1 = ifelse(Structure == "CVVVC", substr(IPA,1,1),C1)) %>%
+  dplyr::mutate(V = ifelse(Structure == "CVVVC", substr(IPA,2,4),V)) %>%
+  dplyr::mutate(C2 = ifelse(Structure == "CVVVC", substr(IPA,5,5),C2)) %>%
+  # VV
+  dplyr::mutate(V = ifelse(Structure == "VV", substr(IPA,1,2),V)) %>%
+  # CCVV
+  dplyr::mutate(C1 = ifelse(Structure == "CCVV", substr(IPA,1,2),C1)) %>%
+  dplyr::mutate(V = ifelse(Structure == "CCVV", substr(IPA,3,4),V)) %>%
+  # CVVCC
+  dplyr::mutate(C1 = ifelse(Structure == "CVVCC", substr(IPA,1,1),C1)) %>%
+  dplyr::mutate(V = ifelse(Structure == "CVVCC", substr(IPA,2,3),V)) %>%
+  dplyr::mutate(C2 = ifelse(Structure == "CVVCC", substr(IPA,4,5),C2)) %>%
+  # CVVCCC
+  dplyr::mutate(C1 = ifelse(Structure == "CVVCCC", substr(IPA,1,1),C1)) %>%
+  dplyr::mutate(V = ifelse(Structure == "CVVCCC", substr(IPA,2,3),V)) %>%
+  dplyr::mutate(C2 = ifelse(Structure == "CVVCCC", substr(IPA,4,6),C2)) %>%
+  # CVVCVCC
+  dplyr::mutate(C1 = ifelse(Structure == "CVVCVCC", substr(IPA,1,1),C1)) %>%
+  dplyr::mutate(V = ifelse(Structure == "CVVCVCC", substr(IPA,2,3),V)) %>%
+  dplyr::mutate(C2 = ifelse(Structure == "CVVCVCC", substr(IPA,4,4),C2))
+
+IPA_errors <- IPA_errors %>%
+  dplyr::mutate(sylCount = "") %>%
+  dplyr::mutate(sylCount = ifelse(Structure == "CVC", 1,sylCount)) %>%
+  dplyr::mutate(sylCount = ifelse(Structure == "CVCC", 1,sylCount)) %>%
+  dplyr::mutate(sylCount = ifelse(Structure == "V", 1,sylCount)) %>%
+  dplyr::mutate(sylCount = ifelse(Structure == "VCC", 1,sylCount)) %>%
+  dplyr::mutate(sylCount = ifelse(Structure == "VC", 1,sylCount)) %>%
+  dplyr::mutate(sylCount = ifelse(Structure == "CV", 1,sylCount)) %>%
+  dplyr::mutate(sylCount = ifelse(Structure == "CC", 1,sylCount)) %>%
+  dplyr::mutate(sylCount = ifelse(Structure == "C", 1,sylCount)) %>%
+  dplyr::mutate(sylCount = ifelse(Structure == "CCVC", 1,sylCount)) %>%
+  dplyr::mutate(sylCount = ifelse(Structure == "CCVCC", 1,sylCount)) %>%
+  dplyr::mutate(sylCount = ifelse(Structure == "VCC", 1,sylCount)) %>%
+  dplyr::mutate(sylCount = ifelse(Structure == "CCVVC", 1,sylCount)) %>%
+  dplyr::mutate(sylCount = ifelse(Structure == "CVVC", 1,sylCount)) %>%
+  dplyr::mutate(sylCount = ifelse(Structure == "CCV", 1,sylCount)) %>%
+  dplyr::mutate(sylCount = ifelse(Structure == "CVCCC", 1,sylCount)) %>%
+  dplyr::mutate(sylCount = ifelse(Structure == "CCCVC", 1,sylCount)) %>%
+  dplyr::mutate(sylCount = ifelse(Structure == "CVV", 1,sylCount)) %>%
+  dplyr::mutate(sylCount = ifelse(Structure == "VVC", 1,sylCount)) %>%
+  dplyr::mutate(sylCount = ifelse(Structure == "CCVVVC", 1,sylCount)) %>%
+  dplyr::mutate(sylCount = ifelse(Structure == "CVVVC", 1,sylCount)) %>%
+  dplyr::mutate(sylCount = ifelse(Structure == "VV", 1,sylCount)) %>%
+  dplyr::mutate(sylCount = ifelse(Structure == "CCVV", 1,sylCount)) %>%
+  dplyr::mutate(sylCount = ifelse(Structure == "CVVCC", 1,sylCount)) %>%
+  dplyr::mutate(sylCount = ifelse(Structure == "CVVCCC", 1,sylCount)) %>%
+  dplyr::mutate(sylCount = ifelse(Structure == "CCCVCC", 1,sylCount)) %>%
+  
+# 2 syllables
+  dplyr::mutate(sylCount = ifelse(Structure == "CVCVC", 2,sylCount)) %>%
+  dplyr::mutate(sylCount = ifelse(Structure == "CCVCVC", 2,sylCount)) %>%
+  dplyr::mutate(sylCount = ifelse(Structure == "VCVCC", 2,sylCount)) %>%
+  dplyr::mutate(sylCount = ifelse(Structure == "CVCV", 2,sylCount)) %>%
+  dplyr::mutate(sylCount = ifelse(Structure == "CVCVCCC", 2,sylCount)) %>%
+  dplyr::mutate(sylCount = ifelse(Structure == "CVCVCC", 2,sylCount)) %>%
+  dplyr::mutate(sylCount = ifelse(Structure == "VCVC", 2,sylCount)) %>%
+  dplyr::mutate(sylCount = ifelse(Structure == "CVCCVC", 2,sylCount)) %>%
+  dplyr::mutate(sylCount = ifelse(Structure == "CVVCVC", 2,sylCount)) %>%
+  dplyr::mutate(sylCount = ifelse(Structure == "CVCVV", 2,sylCount)) %>%
+  dplyr::mutate(sylCount = ifelse(Structure == "CVVCVCC", 2,sylCount)) %>%
+  dplyr::mutate(sylCount = ifelse(Structure == "CVVV", 2,sylCount)) %>%
+  dplyr::mutate(sylCount = ifelse(Structure == "CVCVV", 2,sylCount)) %>%
+  
+# 3 syllables
+  dplyr::mutate(sylCount = ifelse(Structure == "CVCCVCVCV", 3,sylCount))
+  
+IPA_target <- IPA_target %>%
+  dplyr::rename(tIPA = IPA,
+                tC1 = C1,
+                tV = V,
+                tC2 = C2)
+
+IPA_errors <- IPA_errors %>%
+  dplyr::rename(eIPA = IPA,
+                eC1 = C1,
+                eV = V,
+                eC2 = C2) %>%
+  dplyr::rename(Response = uniqueErrors)
+
+wordTrans <- base::merge(wordTrans,IPA_target)
+wordTrans <- base::merge(wordTrans,IPA_errors)
+
+wordTrans <- wordTrans %>%
+  dplyr::mutate(tC1_class = "") %>%
+  dplyr::mutate(tC1_class = base::ifelse(is.na(tC1),"-",tC1_class)) %>%
+  dplyr::mutate(tC1_class = base::ifelse(grepl("(f|v|s|ʃ|ð|θ|h)",tC1),"fricative",tC1_class)) %>%
+  dplyr::mutate(tC1_class = base::ifelse(grepl("(p|b|t|d|k|g)",tC1),"stop",tC1_class)) %>%
+  dplyr::mutate(tC1_class = base::ifelse(grepl("(ʧ|ʤ)",tC1),"affricate",tC1_class)) %>%
+  dplyr::mutate(tC1_class = base::ifelse(grepl("(n|m)",tC1),"nasal",tC1_class)) %>%
+  dplyr::mutate(tC2_class = "") %>%
+  dplyr::mutate(tC2_class = base::ifelse(is.na(tC2),"-",tC2_class)) %>%
+  dplyr::mutate(tC2_class = base::ifelse(grepl("(f|v|s|ʃ|ð|θ|h)",tC2),"fricative",tC2_class)) %>%
+  dplyr::mutate(tC2_class = base::ifelse(grepl("(p|b|t|d|k|g)",tC2),"stop",tC2_class)) %>%
+  dplyr::mutate(tC2_class = base::ifelse(grepl("(ʧ|ʤ)",tC2),"affricate",tC2_class)) %>%
+  dplyr::mutate(tC2_class = base::ifelse(grepl("(n|m)",tC2),"nasal",tC2_class)) %>%
+  dplyr::mutate(eC1_class = "") %>%
+  dplyr::mutate(eC1_class = base::ifelse(is.na(eC1),"-",eC1_class)) %>%
+  dplyr::mutate(eC1_class = base::ifelse(grepl("",eC1),"-",eC1_class)) %>%
+  dplyr::mutate(eC1_class = base::ifelse(grepl("(f|v|s|ʃ|ð|θ|h)",eC1),"fricative",eC1_class)) %>%
+  dplyr::mutate(eC1_class = base::ifelse(grepl("(p|b|t|d|k|g)",eC1),"stop",eC1_class)) %>%
+  dplyr::mutate(eC1_class = base::ifelse(grepl("(ʧ|ʤ)",eC1),"affricate",eC1_class)) %>%
+  dplyr::mutate(eC1_class = base::ifelse(grepl("(n|m)",eC1),"nasal",eC1_class)) %>%
+  dplyr::mutate(eC2_class = "") %>%
+  dplyr::mutate(eC2_class = base::ifelse(is.na(eC2),"-",eC2_class)) %>%
+  dplyr::mutate(eC2_class = base::ifelse(grepl("",eC2),"-",eC2_class)) %>%
+  dplyr::mutate(eC2_class = base::ifelse(grepl(" ",eC2),"-",eC2_class)) %>%
+  dplyr::mutate(eC2_class = base::ifelse(grepl("(f|v|s|ʃ|ð|θ|h)",eC2),"fricative",eC2_class)) %>%
+  dplyr::mutate(eC2_class = base::ifelse(grepl("(p|b|t|d|k|g)",eC2),"stop",eC2_class)) %>%
+  dplyr::mutate(eC2_class = base::ifelse(grepl("(ʧ|ʤ)",eC2),"affricate",eC2_class)) %>%
+  dplyr::mutate(eC2_class = base::ifelse(grepl("(n|m)",eC2),"nasal",eC2_class))
+
+wordTrans <- wordTrans %>%
+  dplyr::mutate(tC1_place = "") %>%
+  dplyr::mutate(tC1_place = base::ifelse(is.na(tC1),"-",tC1_place)) %>%
+  dplyr::mutate(tC1_place = base::ifelse(grepl("",tC1),"-",tC1_place)) %>%
+  dplyr::mutate(tC1_place = base::ifelse(grepl(" ",tC1),"-",tC1_place)) %>%
+  dplyr::mutate(tC1_place = base::ifelse(grepl("(p|b|m|w)",tC1),"bilabial",tC1_place)) %>%
+  dplyr::mutate(tC1_place = base::ifelse(grepl("(f|v)",tC1),"labiodental",tC1_place)) %>%
+  dplyr::mutate(tC1_place = base::ifelse(grepl("(ð|θ)",tC1),"interdental",tC1_place)) %>%
+  dplyr::mutate(tC1_place = base::ifelse(grepl("(t|d|s|z|n|l)",tC1),"alveolar",tC1_place)) %>%
+  dplyr::mutate(tC1_place = base::ifelse(grepl("(k|g|ŋ)",tC1),"velar",tC1_place)) %>%
+  dplyr::mutate(tC1_place = base::ifelse(grepl("(ʃ|ʧ|ʤ|j|ɹ)",tC1),"palatal",tC1_place)) %>%
+  dplyr::mutate(tC2_place = "") %>%
+  dplyr::mutate(tC2_place = base::ifelse(is.na(tC2),"-",tC2_place)) %>%
+  dplyr::mutate(tC2_place = base::ifelse(grepl("",tC2),"-",tC2_place)) %>%
+  dplyr::mutate(tC2_place = base::ifelse(grepl(" ",tC2),"-",tC2_place)) %>%
+  dplyr::mutate(tC2_place = base::ifelse(grepl("(p|b|m|w)",tC2),"bilabial",tC2_place)) %>%
+  dplyr::mutate(tC2_place = base::ifelse(grepl("(f|v)",tC2),"labiodental",tC2_place)) %>%
+  dplyr::mutate(tC2_place = base::ifelse(grepl("(ð|θ)",tC2),"interdental",tC2_place)) %>%
+  dplyr::mutate(tC2_place = base::ifelse(grepl("(t|d|s|z|n|l)",tC2),"alveolar",tC2_place)) %>%
+  dplyr::mutate(tC2_place = base::ifelse(grepl("(k|g|ŋ)",tC2),"velar",tC2_place)) %>%
+  dplyr::mutate(tC2_place = base::ifelse(grepl("(ʃ|ʧ|ʤ|j|ɹ)",tC2),"palatal",tC2_place)) %>%
+  dplyr::mutate(eC1_place = "") %>%
+  dplyr::mutate(eC1_place = base::ifelse(is.na(eC1),"-",eC1_place)) %>%
+  dplyr::mutate(eC1_place = base::ifelse(grepl("",eC1),"-",eC1_place)) %>%
+  dplyr::mutate(eC1_place = base::ifelse(grepl(" ",eC1),"-",eC1_place)) %>%
+  dplyr::mutate(eC1_place = base::ifelse(grepl("(p|b|m|w)",eC1),"bilabial",eC1_place)) %>%
+  dplyr::mutate(eC1_place = base::ifelse(grepl("(f|v)",eC1),"labiodental",eC1_place)) %>%
+  dplyr::mutate(eC1_place = base::ifelse(grepl("(ð|θ)",eC1),"interdental",eC1_place)) %>%
+  dplyr::mutate(eC1_place = base::ifelse(grepl("(t|d|s|z|n|l)",eC1),"alveolar",eC1_place)) %>%
+  dplyr::mutate(eC1_place = base::ifelse(grepl("(k|g|ŋ)",eC1),"velar",eC1_place)) %>%
+  dplyr::mutate(eC1_place = base::ifelse(grepl("(ʃ|ʧ|ʤ|j|ɹ)",eC1),"palatal",eC1_place)) %>%
+  dplyr::mutate(eC2_place = "") %>%
+  dplyr::mutate(eC2_place = base::ifelse(is.na(eC2),"-",eC2_place)) %>%
+  dplyr::mutate(eC2_place = base::ifelse(grepl("",eC2),"-",eC2_place)) %>%
+  dplyr::mutate(eC2_place = base::ifelse(grepl(" ",eC2),"-",eC2_place)) %>%
+  dplyr::mutate(eC2_place = base::ifelse(grepl("(p|b|m|w)",eC2),"bilabial",eC2_place)) %>%
+  dplyr::mutate(eC2_place = base::ifelse(grepl("(f|v)",eC2),"labiodental",eC2_place)) %>%
+  dplyr::mutate(eC2_place = base::ifelse(grepl("(ð|θ)",eC2),"interdental",eC2_place)) %>%
+  dplyr::mutate(eC2_place = base::ifelse(grepl("(t|d|s|z|n|l)",eC2),"alveolar",eC2_place)) %>%
+  dplyr::mutate(eC2_place = base::ifelse(grepl("(k|g|ŋ)",eC2),"velar",eC2_place)) %>%
+  dplyr::mutate(eC2_place = base::ifelse(grepl("(ʃ|ʧ|ʤ|j|ɹ)",eC2),"palatal",eC2_place))
+
+wordTrans <- wordTrans %>%
+  dplyr::mutate(tC1_voicing = "") %>%
+  dplyr::mutate(tC1_voicing = base::ifelse(is.na(tC1),"-",tC1_voicing)) %>%
+  dplyr::mutate(tC1_voicing = base::ifelse(grepl("",tC1),"-",tC1_voicing)) %>%
+  dplyr::mutate(tC1_voicing = base::ifelse(grepl(" ",tC1),"-",tC1_voicing)) %>%
+  dplyr::mutate(tC1_voicing = base::ifelse(grepl("(b|v|m|w|d|z|n|l|ʤ|j|ɹ|g|ŋ)",tC1),"voiced",tC1_voicing)) %>%
+  dplyr::mutate(tC1_voicing = base::ifelse(grepl("(p|f|ð|θ|t|s|ʃ|ʧ|k|h)",tC1),"voiceless",tC1_voicing)) %>%
+  dplyr::mutate(tC2_voicing = "") %>%
+  dplyr::mutate(tC2_voicing = base::ifelse(is.na(tC2),"-",tC2_voicing)) %>%
+  dplyr::mutate(tC2_voicing = base::ifelse(grepl("",tC2),"-",tC2_voicing)) %>%
+  dplyr::mutate(tC2_voicing = base::ifelse(grepl(" ",tC2),"-",tC2_voicing)) %>%
+  dplyr::mutate(tC2_voicing = base::ifelse(grepl("(b|v|m|w|d|z|n|l|ʤ|j|ɹ|g|ŋ)",tC2),"voiced",tC2_voicing)) %>%
+  dplyr::mutate(tC2_voicing = base::ifelse(grepl("(p|f|ð|θ|t|s|ʃ|ʧ|k|h)",tC2),"voiceless",tC2_voicing)) %>%
+  dplyr::mutate(eC1_voicing = "") %>%
+  dplyr::mutate(eC1_voicing = base::ifelse(is.na(eC1),"-",eC1_voicing)) %>%
+  dplyr::mutate(eC1_voicing = base::ifelse(grepl("",eC1),"-",eC1_voicing)) %>%
+  dplyr::mutate(eC1_voicing = base::ifelse(grepl(" ",eC1),"-",eC1_voicing)) %>%
+  dplyr::mutate(eC1_voicing = base::ifelse(grepl("(b|v|m|w|d|z|n|l|ʤ|j|ɹ|g|ŋ)",eC1),"voiced",eC1_voicing)) %>%
+  dplyr::mutate(eC1_voicing = base::ifelse(grepl("(p|f|ð|θ|t|s|ʃ|ʧ|k|h)",eC1),"voiceless",eC1_voicing)) %>%
+  dplyr::mutate(eC2_voicing = "") %>%
+  dplyr::mutate(eC2_voicing = base::ifelse(is.na(eC2),"-",eC2_voicing)) %>%
+  dplyr::mutate(eC2_voicing = base::ifelse(grepl("",eC2),"-",eC2_voicing)) %>%
+  dplyr::mutate(eC2_voicing = base::ifelse(grepl(" ",eC2),"-",eC2_voicing)) %>%
+  dplyr::mutate(eC2_voicing = base::ifelse(grepl("(b|v|m|w|d|z|n|l|ʤ|j|ɹ|g|ŋ)",eC2),"voiced",eC2_voicing)) %>%
+  dplyr::mutate(eC2_voicing = base::ifelse(grepl("(p|f|ð|θ|t|s|ʃ|ʧ|k|h)",eC2),"voiceless",eC2_voicing))
+
+# Organized the order of columns
+wordTrans <- wordTrans %>%
+  dplyr::select(!c(Response.R,autoscore.R, X, fileID)) %>%
+  dplyr::relocate(Target, .before = tIPA) %>%
+  dplyr::relocate(Response, .before = eIPA) %>%
+  dplyr::relocate(eC1_class, .after = tC1_class) %>%
+  dplyr::relocate(eC1_place, .after = tC1_place) %>%  
+  dplyr::relocate(eC1_voicing, .after = tC1_voicing) %>%  
+  dplyr::relocate(tC1_place:eC1_place, .after = eC1_class) %>%  
+  dplyr::relocate(tC1_voicing:eC1_voicing, .after = eC1_place) %>%  
+  dplyr::relocate(eC2_class, .after = tC2_class) %>%
+  dplyr::mutate(tC1 = ifelse(is.na(tC1),"",tC1),
+                tC2 = ifelse(is.na(tC2),"",tC2),
+                C1_placeAcc = ifelse(tC1_place == eC1_place,1,0),
+                C1_classAcc = ifelse(tC1_class == eC1_class,1,0),
+                C1_voicingAcc = ifelse(tC1_voicing == eC1_voicing,1,0),
+                C1_acc = ifelse(tC1 == eC1,1,0),
+                C2_acc = ifelse(tC2 == eC2,1,0),
+                V_acc = ifelse(tV == eV,1,0),
+                wordAcc = ifelse(autoscore == 0,"Incorrect","Correct"),
+                speakerID = as.factor(speakerID),
+                tC1_class = as.factor(tC1_class),
+                tC1_place = as.factor(tC1_place),
+                tC1_voicing = as.factor(tC1_voicing),
+                C1_accLabel = ifelse(C1_acc == 1,"Correct","Incorrect"),
+                C1_accLabel = as.factor(C1_accLabel),
+                C2_accLabel = ifelse(C2_acc == 1,"Correct","Incorrect"),
+                C2_accLabel = as.factor(C2_accLabel),
+                sylCount = as.numeric(sylCount),
+                condition = factor(condition, levels = c("ConvNoMask","ConvMask","ClearMask")))
+
+```
+
+## Confusion Matrix
+```{r}
+dir.create("Data/Plots/Confusion Matrices", showWarnings = F)
+lvls <- c("p","b","f","v","t","d","s","ʃ","ʧ", "n", "m", "k","g","h","","l", "r", "ð", "θ","w","j","z")
+lvls <- c("p","b","f","v","t","d","s","ʃ","ʧ", "n", "m", "k","g","h","")
+
+# Plot settings
+addCounts <- T
+addNormalized <- F
+addDiagPercent <- T
+rmZeroPercent <- T
+addRowPercent <- F
+addColPercent <- F
+addZeroShading <- F
+
+confMatrixData <- wordTrans %>%
+  dplyr::filter(eC1 %in% lvls)
+
+# C1 - ConvNoMask ----
+C1_ConvNoMask <- confusion_matrix(targets = confMatrixData %>%
+                                    dplyr::filter(sylCount < 2) %>%
+                                    dplyr::filter(condition == "ConvNoMask") %>%
+                                    pull(tC1),
+                               predictions = confMatrixData %>%
+                                 dplyr::filter(sylCount < 2) %>%
+                                 dplyr::filter(condition == "ConvNoMask") %>%
+                                 dplyr::mutate(eC1 = substr(eC1, 1, 1)) %>%
+                                 pull(eC1))
+
+C1_ConvNoMask_matrix <- plot_confusion_matrix(C1_ConvNoMask$`Confusion Matrix`[[1]],
+                                     target_col = "Target",
+                                     prediction_col = "Prediction",
+                                     class_order = rev(lvls),
+                                     counts_col = "N",
+                                     add_counts = addCounts,
+                                     add_normalized = addNormalized,
+                                     diag_percentages_only = addDiagPercent,
+                                     rm_zero_percentages = rmZeroPercent,
+                                     add_row_percentages = addRowPercent,
+                                     add_col_percentages = addColPercent,
+                                     add_zero_shading = addZeroShading,
+                                     intensity_by = "counts",
+                                     palette = "Blues",
+                                     theme_fn = ggplot2::theme_light) +
+      #ggtitle("Conversational") + theme(plot.title = element_text(hjust = 0.5)) +
+  xlab("Intended Consonant") + ylab("Perceived Consonant")
+C1_ConvNoMask_matrix
+
+# C1 - ConvMask ----
+C1_ConvMask <- confusion_matrix(targets = confMatrixData %>%
+                                    dplyr::filter(sylCount < 2) %>%
+                                    dplyr::filter(condition == "ConvMask") %>%
+                                    pull(tC1),
+                               predictions = confMatrixData %>%
+                                 dplyr::filter(sylCount < 2) %>%
+                                 dplyr::filter(condition == "ConvMask") %>%
+                                 dplyr::mutate(eC1 = substr(eC1, 1, 1)) %>%
+                                 pull(eC1))
+
+C1_ConvMask_matrix <- plot_confusion_matrix(C1_ConvMask$`Confusion Matrix`[[1]],
+                                     target_col = "Target",
+                                     prediction_col = "Prediction",
+                                     class_order = rev(lvls),
+                                     add_counts = addCounts,
+                                     add_normalized = addNormalized,
+                                     diag_percentages_only = addDiagPercent,
+                                     rm_zero_percentages = rmZeroPercent,
+                                     add_row_percentages = addRowPercent,
+                                     add_col_percentages = addColPercent,
+                                     add_zero_shading = addZeroShading,
+                                     intensity_by = "counts",
+                                     palette = "Blues",
+                                     theme_fn = ggplot2::theme_light) +
+      #ggtitle("Conversational") + theme(plot.title = element_text(hjust = 0.5)) +
+  xlab("Intended Consonant") + ylab("Perceived Consonant")
+C1_ConvMask_matrix
+
+# C1 - ClearMask ----
+C1_ClearMask <- confusion_matrix(targets = confMatrixData %>%
+                                    dplyr::filter(sylCount < 2) %>%
+                                    dplyr::filter(condition == "ClearMask") %>%
+                                    pull(tC1),
+                               predictions = confMatrixData %>%
+                                 dplyr::filter(sylCount < 2) %>%
+                                 dplyr::filter(condition == "ClearMask") %>%
+                                 dplyr::mutate(eC1 = substr(eC1, 1, 1)) %>%
+                                 pull(eC1))
+
+C1_ClearMask_matrix <- plot_confusion_matrix(C1_ClearMask$`Confusion Matrix`[[1]],
+                                     target_col = "Target",
+                                     prediction_col = "Prediction",
+                                     class_order = rev(lvls),
+                                     counts_col = "N",
+                                     add_counts = addCounts,
+                                     add_normalized = addNormalized,
+                                     diag_percentages_only = addDiagPercent,
+                                     rm_zero_percentages = rmZeroPercent,
+                                     add_row_percentages = addRowPercent,
+                                     add_col_percentages = addColPercent,
+                                     add_zero_shading = addZeroShading,
+                                     intensity_by = "counts",
+                                     palette = "Blues",
+                                     theme_fn = ggplot2::theme_light) +
+      #ggtitle("Conversational") + theme(plot.title = element_text(hjust = 0.5)) +
+  xlab("Intended Consonant") + ylab("Perceived Consonant")
+C1_ClearMask_matrix
+
+# C2
+#lvls <- c("p","b","f","v","t","d","s","ʃ","ʧ", "n", "m", "k","g","h","")
+lvls <- c("p", "b", "t","d","n","k","g", "")
+
+confMatrixData <- wordTrans %>%
+  dplyr::filter(eC2 %in% lvls)
+
+# C2 - ConvNoMask ----
+C2_ConvNoMask <- confusion_matrix(targets = confMatrixData %>%
+                                    dplyr::filter(sylCount < 2) %>%
+                                    dplyr::filter(condition == "ConvNoMask") %>%
+                                    pull(tC2),
+                               predictions = confMatrixData %>%
+                                 dplyr::filter(sylCount < 2) %>%
+                                 dplyr::filter(condition == "ConvNoMask") %>%
+                                 dplyr::mutate(eC2 = substr(eC2, 1, 1)) %>%
+                                 pull(eC2))
+
+C2_ConvNoMask_matrix <- plot_confusion_matrix(C2_ConvNoMask$`Confusion Matrix`[[1]],
+                                     target_col = "Target",
+                                     prediction_col = "Prediction",
+                                     class_order = rev(lvls),
+                                     add_counts = addCounts,
+                                     add_normalized = addNormalized,
+                                     diag_percentages_only = addDiagPercent,
+                                     rm_zero_percentages = rmZeroPercent,
+                                     add_row_percentages = addRowPercent,
+                                     add_col_percentages = addColPercent,
+                                     add_zero_shading = addZeroShading,
+                                     intensity_by = "counts",
+                                     palette = "Blues",
+                                     theme_fn = ggplot2::theme_light) +
+      #ggtitle("Conversational") + theme(plot.title = element_text(hjust = 0.5)) +
+  xlab("Intended Consonant") + ylab("Perceived Consonant")
+C2_ConvNoMask_matrix
+
+# C2 - ConvMask ----
+C2_ConvMask <- confusion_matrix(targets = confMatrixData %>%
+                                    dplyr::filter(sylCount < 2) %>%
+                                    dplyr::filter(condition == "ConvMask") %>%
+                                    pull(tC2),
+                               predictions = confMatrixData %>%
+                                 dplyr::filter(sylCount < 2) %>%
+                                 dplyr::filter(condition == "ConvMask") %>%
+                                 dplyr::mutate(eC2 = substr(eC2, 1, 1)) %>%
+                                 pull(eC2))
+
+C2_ConvMask_matrix <- plot_confusion_matrix(C2_ConvMask$`Confusion Matrix`[[1]],
+                                     target_col = "Target",
+                                     prediction_col = "Prediction",
+                                     class_order = rev(lvls),
+                                     add_counts = addCounts,
+                                     add_normalized = addNormalized,
+                                     diag_percentages_only = addDiagPercent,
+                                     rm_zero_percentages = rmZeroPercent,
+                                     add_row_percentages = addRowPercent,
+                                     add_col_percentages = addColPercent,
+                                     add_zero_shading = addZeroShading,
+                                     intensity_by = "counts",
+                                     palette = "Blues",
+                                     theme_fn = ggplot2::theme_light) +
+      #ggtitle("Conversational") + theme(plot.title = element_text(hjust = 0.5)) +
+  xlab("Intended Consonant") + ylab("Perceived Consonant")
+C2_ConvMask_matrix
+
+# C2 - ClearMask ----
+C2_ClearMask <- confusion_matrix(targets = confMatrixData %>%
+                                    dplyr::filter(sylCount < 2) %>%
+                                    dplyr::filter(condition == "ClearMask") %>%
+                                    pull(tC2),
+                               predictions = confMatrixData %>%
+                                 dplyr::filter(sylCount < 2) %>%
+                                 dplyr::filter(condition == "ClearMask") %>%
+                                 dplyr::mutate(eC2 = substr(eC2, 1, 1)) %>%
+                                 pull(eC2))
+
+C2_ClearMask_matrix <- plot_confusion_matrix(C2_ClearMask$`Confusion Matrix`[[1]],
+                                     target_col = "Target",
+                                     prediction_col = "Prediction",
+                                     class_order = rev(lvls),
+                                     counts_col = "N",
+                                     add_counts = addCounts,
+                                     add_normalized = addNormalized,
+                                     diag_percentages_only = addDiagPercent,
+                                     rm_zero_percentages = rmZeroPercent,
+                                     add_row_percentages = addRowPercent,
+                                     add_col_percentages = addColPercent,
+                                     add_zero_shading = addZeroShading,
+                                     intensity_by = "counts",
+                                     palette = "Blues",
+                                     theme_fn = ggplot2::theme_light) +
+      #ggtitle("Conversational") + theme(plot.title = element_text(hjust = 0.5)) +
+  xlab("Intended Consonant") + ylab("Perceived Consonant")
+C2_ClearMask_matrix
+```
+
+
+```{r}
+
+combinedConfusion <- ggpubr::ggarrange(C1_ConvNoMask_matrix, C2_ConvNoMask_matrix,
+                                       C1_ConvMask_matrix, C2_ConvMask_matrix,
+                                       C1_ClearMask_matrix, C2_ClearMask_matrix,
+                                       ncol = 2,
+                                       nrow = 3)
+ggsave("Data/Plots/Confusion Matrices/ConfMatrix.png",
+       plot = combinedConfusion,
+       height = 7,
+       width = 5,
+       units = "in",
+       scale = 2)
+```
+
+## Transcription Error Analysis
+```{r}
+m0 <- glmer(C1_acc ~ 1 + (1 | speakerID), data = wordTrans, family = binomial)
+
+summary(m0)
+performance::icc(m0)
+```
+
+### m1
+```{r}
+m1 <- glmer(C1_acc ~ 1 + tC1_class + (1 | speakerID), data = wordTrans, family = binomial)
+
+summary(m1)
+```
+### m2
+```{r}
+m2 <- glmer(C1_acc ~ tC1_class + tC1_place + (1 | speakerID), data = wordTrans, family = binomial)
+
+summary(m2)
+```
+
+## Plot??
+```{r}
+plotData1 <- wordTrans %>%
+                    dplyr::mutate(count = 1,
+                                  tC1_class = factor(tC1_class, levels = c("fricative", "affricate","nasal","stop","-"))) %>%
+  dplyr::select(C1_accLabel, count, tC1_class, condition) %>%
+  dplyr::rename(accLabel = C1_accLabel,
+                t_class = tC1_class) %>%
+  dplyr::mutate(C = "Initial Consonant")
+
+plotData2 <- wordTrans %>%
+                    dplyr::mutate(count = 1,
+                                  tC2_class = factor(tC2_class, levels = c("fricative", "affricate","nasal","stop","-"))) %>%
+  dplyr::select(C2_accLabel, count, tC2_class, condition) %>%
+  dplyr::rename(accLabel = C2_accLabel,
+                t_class = tC2_class) %>%
+  dplyr::mutate(C = "Final Consonant")
+
+plotData <- rbind(plotData1,plotData2) %>%
+  dplyr::mutate(condition = case_when(
+    condition == "ConvNoMask" ~ "Conversational, Mask-off",
+    condition == "ConvMask" ~ "Conversational, Mask-on",
+    condition == "ClearMask" ~ "Clear, Mask-on"
+  ),
+  condition = factor(condition, levels = c("Conversational, Mask-off","Conversational, Mask-on", "Clear, Mask-on")),
+  C = factor(C, levels = c("Initial Consonant", "Final Consonant")))
+
+classPlot <- ggplot(plotData,
+                    aes(fill = accLabel, y = count, x = t_class)) + 
+  geom_bar(position="fill", stat="identity") +
+  labs(x = "Consonant Class", y = "Consonant Accuracy (%)") +
+  guides(fill=guide_legend(title="Accuracy")) +
+  scale_fill_brewer(palette = "Pastel1", direction = -1) +
+  facet_grid(C ~ condition) +
+  #facet_wrap(~condition) +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = -45, vjust = 0, hjust=0))
+classPlot
+
+ggsave("Data/Plots/PerceivedClass.jpeg",
+       plot = last_plot(),
+       height = 4,
+       width = 6.5,
+       units = "in")
+
+plotData %>%
+  dplyr::group_by(condition, t_class,C, accLabel) %>%
+  dplyr::summarise(acc = n())
+```
+
+
+```{r}
+C1_classPlot <- ggplot(wordTrans %>%
+                    dplyr::mutate(count = 1,
+                                  tC1_class = factor(tC1_class, levels = c("fricative", "affricate","nasal","stop","-"))),
+                    aes(fill = C1_accLabel, y = count, x = tC1_class)) + 
+  geom_bar(position="fill", stat="identity") +
+  labs(x = "Initial Consonant Class", y = "Initial Consonant Accuracy (%)") +
+  guides(fill=guide_legend(title="Accuracy")) +
+  scale_fill_brewer(palette = "Pastel1", direction = -1) +
+  facet_wrap(~condition) +
+  theme_classic()
+C1_classPlot
+
+C2_classPlot <- ggplot(wordTrans %>%
+                    dplyr::mutate(count = 1,
+                                  tC2_class = factor(tC2_class, levels = c("fricative", "affricate","nasal","stop","-"))),
+                    aes(fill = C2_accLabel, y = count, x = tC2_class)) + 
+  geom_bar(position="fill", stat="identity") +
+  labs(x = "Initial Consonant Class", y = "Initial Consonant Accuracy (%)") +
+  guides(fill=guide_legend(title="Accuracy")) +
+  scale_fill_brewer(palette = "Pastel1", direction = -1) +
+  facet_wrap(~condition) +
+  theme_classic()
+C2_classPlot
+```
+
+
+```{r}
+C1_placePlot <- ggplot(wordTrans %>%
+                    dplyr::mutate(count = 1,
+                                  tC1_place = factor(tC1_place, levels = c("labiodental", "-", "bilabial","palatal","velar","alveolar"))),
+                    aes(fill = C1_accLabel, y = count, x = tC1_place)) + 
+  geom_bar(position="fill", stat="identity") +
+  labs(x = "Initial Consonant Place", y = "Initial Consonant Accuracy (%)") +
+  guides(fill=guide_legend(title="Accuracy")) +
+  scale_fill_brewer(palette = "Pastel1", direction = -1) +
+    facet_wrap(~condition) +
+  theme_classic()
+C1_placePlot
+```
+
+## Vowel Analysis
+```{r}
+VowelData_Wide <- VowelData %>%
+  dplyr::mutate(Sound = gsub("/","",Sound, fixed = T)) %>%
+  dplyr::mutate(Condition = fct_relevel(Condition, levels = "ClearMask", "ConvMask", "ConvNoMask")) %>%
+  dplyr::mutate(Sound = as.factor(Sound)) %>%
+  group_by(SpeakerID, Condition, Word, Sound) %>%
+  dplyr::summarise(Duration = mean(Duration, na.rm = T),
+                   F1 = mean(F1, na.rm = T),
+                   F2 = mean(F2, na.rm = T),
+                   Ratio = mean(Ratio, na.rm = T), .groups = "rowwise") %>%
+  dplyr::ungroup() 
+
+#dur_aov <- aov(Duration ~ Condition * Sound + Error(SpeakerID/Condition*Sound), data = VowelData_Wide)
+#summary(dur_aov)
+
+#F1_aov <- aov(F1 ~ Sound + Condition * Sound + Error(SpeakerID/Condition*Sound), data = VowelData_Wide)
+#summary(F1_aov)
+
+
+Vowel_MANOVA <- stats::manova(cbind(Duration,F1,F2,Ratio) ~ Sound * Condition + Error(SpeakerID/Condition), data = VowelData_Wide)
+VowelSum <- summary(Vowel_MANOVA)
+
+sprintf("%.4f", VowelSum$`Error: Within`$stats[1,6])
+sprintf("%.3f", VowelSum$`Error: Within`$stats[1,3])
+VowelSum$`Error: Within`$stats[1,6]
+
+
+summary.aov(Vowel_MANOVA$Within)
+summary.aov(Vowel_MANOVA$`SpeakerID:Condition`)
+
+
+pwc_Dur <- VowelData_Wide %>%
+  ungroup() %>%
+  rstatix::pairwise_t_test(
+    Duration ~ Sound, paired = F,
+    p.adjust.method = "bonferroni"
+    ) %>%
+  dplyr::rename(measure = .y.)
+DT::datatable(pwc_Dur)
+
+pwc_F1 <- VowelData_Wide %>%
+  ungroup() %>%
+  rstatix::pairwise_t_test(
+    F1 ~ Sound, paired = F,
+    p.adjust.method = "bonferroni"
+    ) %>%
+  dplyr::rename(measure = .y.)
+DT::datatable(pwc_F1)
+
+pwc_F2 <- VowelData_Wide %>%
+  ungroup() %>%
+  rstatix::pairwise_t_test(
+    F2 ~ Sound, paired = F,
+    p.adjust.method = "bonferroni"
+    ) %>%
+  dplyr::rename(measure = .y.)
+DT::datatable(pwc_F2)
+
+pwc_sentence <- sentenceRatings_bySpeaker %>%
+  ungroup() %>%
+  #dplyr::select(condition,VAS) %>%
+  rstatix::pairwise_t_test(
+    VAS_mean ~ condition, paired = TRUE,
+    p.adjust.method = "bonferroni"
+    ) %>%
+  dplyr::rename(measure = .y.)
+DT::datatable(pwc_sentence)
+
+pwc_Ratio <- VowelData_Wide %>%
+  ungroup() %>%
+  rstatix::t_test(
+    Ratio ~ Sound, paired = F,
+    p.adjust.method = "bonferroni"
+    ) %>%
+  dplyr::rename(measure = .y.) %>%
+  dplyr::mutate(df = (n1 - 1) + (n2 - 1))
+DT::datatable(pwc_Ratio)
+
+# Plot
+## custom colors
+my_pal <- rcartocolor::carto_pal(n = 7, name = "Burg")[c(7, 5, 3, 2, 4)]
+
+durationRidgeline <- ggplot() +
+  ggridges::geom_density_ridges(data = VowelData_Wide,
+                          aes(x = Duration, y = Sound, fill = Sound, color = Sound),
+                      alpha = .9) +
+  ggridges::theme_ridges() + 
+  theme(legend.position = "none") +
+  #coord_cartesian(xlim = c(-5,15)) +
+  #scale_y_discrete(limits=rev) +
+  scale_color_manual(values = my_pal, guide = "legend") +
+  scale_fill_manual(values = my_pal, guide = "legend") +
+  labs(x = "Duration (ms)", y = "") 
+durationRidgeline
+
+ggsave("Data/Plots/Distribution_Duration.png", plot = last_plot(),height = 5, width = 8, units = "in")
+
+
+F1Ridgeline <- ggplot() +
+  ggridges::geom_density_ridges(data = VowelData_Wide,
+                          aes(x = F1, y = Sound, fill = Sound, color = Sound),
+                      alpha = .9) +
+  ggridges::theme_ridges() + 
+  theme(legend.position = "none") +
+  #coord_cartesian(xlim = c(-5,15)) +
+  #scale_y_discrete(limits=rev) +
+  scale_color_manual(values = my_pal, guide = "legend") +
+  scale_fill_manual(values = my_pal, guide = "legend") +
+  labs(x = "F1 (Hz)", y = "") 
+F1Ridgeline
+
+ggsave("Data/Plots/Distribution_F1.png", plot = last_plot(),height = 5, width = 8, units = "in")
+
+F2Ridgeline <- ggplot() +
+  ggridges::geom_density_ridges(data = VowelData_Wide,
+                          aes(x = F2, y = Sound, fill = Sound, color = Sound),
+                      alpha = .9) +
+  ggridges::theme_ridges() + 
+  theme(legend.position = "none") +
+  #coord_cartesian(xlim = c(-5,15)) +
+  #scale_y_discrete(limits=rev) +
+  scale_color_manual(values = my_pal, guide = "legend") +
+  scale_fill_manual(values = my_pal, guide = "legend") +
+  labs(x = "F2 (Hz)", y = "") 
+F2Ridgeline
+
+ggsave("Data/Plots/Distribution_F2.png", plot = last_plot(),height = 5, width = 8, units = "in")
+
+RatioRidgeline <- ggplot() +
+  ggridges::geom_density_ridges(data = VowelData_Wide,
+                          aes(x = Ratio, y = Sound, fill = Sound, color = Sound),
+                      alpha = .9) +
+  ggridges::theme_ridges() + 
+  theme(legend.position = "none") +
+  #coord_cartesian(xlim = c(-5,15)) +
+  #scale_y_discrete(limits=rev) +
+  scale_color_manual(values = my_pal, guide = "legend") +
+  scale_fill_manual(values = my_pal, guide = "legend") +
+  labs(x = "F2 (Hz)", y = "") 
+RatioRidgeline
+
+ggsave("Data/Plots/Distribution_Ratio.png", plot = last_plot(),height = 5, width = 8, units = "in")
+```
+
+
+# Tables
+## Mega Descriptives Table
+```{r}
+tableData_Int <- intData %>%
+  tidyr::pivot_longer(cols = sentInt:wordInt, names_to = "Measure",
+                      values_to = "Value") %>%
+  dplyr::select(!ID) %>%
+  dplyr::mutate(Segment = NA)
+
+tableData_Vowels <- VowelData %>%
+    tidyr::pivot_longer(cols = Duration:Ratio, names_to = "Measure",
+                      values_to = "Value") %>%
+  dplyr::select(!Word) %>%
+  dplyr::rename(Segment = Sound)
+
+tableData_Consonants <- MData %>%
+    tidyr::pivot_longer(cols = M1:M4, names_to = "Measure",
+                      values_to = "Value") %>%
+  dplyr::select(!Word) %>%
+  dplyr::rename(Segment = Manner) %>%
+  base::rbind(.,intensityRatio %>%
+                dplyr::rename(Segment = Manner,
+                              Value = CV_Ratio) %>%
+                dplyr::mutate(Measure = "CV_Ratio") %>%
+                dplyr::select(!Word))
+
+tableData <- rbind(tableData_Int,
+                   tableData_Vowels,
+                   tableData_Consonants) %>%
+  dplyr::mutate(Row = row_number()) %>%
+  tidyr::pivot_wider(id_cols = c(Row, Measure, Segment),
+                     names_from = Condition,
+                     values_from = Value) %>%
+  dplyr::group_by(Measure, Segment) %>%
+  dplyr::summarise(ClearMask_m = mean(ClearMask, na.rm = T),
+                   ClearMask_sd = sd(ClearMask, na.rm = T),
+                   ConvMask_m = mean(ConvMask, na.rm = T),
+                   ConvMask_sd = sd(ConvMask, na.rm = T),
+                   ConvNoMask_m = mean(ConvNoMask, na.rm = T),
+                   ConvNoMask_sd = sd(ConvNoMask, na.rm = T)) %>%
+  dplyr::mutate(Group = case_when(
+    Measure == "Duration" |
+      Measure == "F1" |
+      Measure == "F2" |
+      Measure == "Ratio" ~ "Vowels",
+    Measure == "M1" |
+      Measure == "M2" |
+      Measure == "M3" |
+      Measure == "M4" ~ "Consonants",
+    TRUE ~ "Intelligibility"
+  ),
+  Group = factor(Group, levels = c("Intelligibility", "Vowels", "Consonants")))
+
+gt::gt(tableData %>%
+     dplyr::relocate(ConvNoMask_m:ConvNoMask_sd, .after = Segment) %>%
+     dplyr::relocate(ConvMask_m:ConvMask_sd, .after = ConvNoMask_sd),
+   rowname_col = "Measure",
+   groupname_col = "Group") %>%
+  gt::tab_header(
+    title = "Perceptual & Acoustic Measures",
+    subtitle = " "
+  ) %>%
+    gt::tab_spanner(
+    label = "Conversational,\nMask-off",
+    columns = c(ConvNoMask_m, ConvNoMask_sd)
+  ) %>%
+  gt::tab_spanner(
+    label = "Conversational,\nMask-on",
+    columns = c(ConvMask_m, ConvMask_sd)
+  ) %>%
+  gt::tab_spanner(
+    label = "Clear,\nMask-on",
+    columns = c(ClearMask_m, ClearMask_sd)
+  ) %>%
+  gt::fmt_number(
+    columns = ConvNoMask_m:ClearMask_sd,
+    decimals = 2
+  ) %>%
+  gt::cols_label(
+    ConvNoMask_m = "M",
+    ConvMask_m = "M",
+    ClearMask_m = "M",
+    ConvNoMask_sd = "SD",
+    ConvMask_sd = "SD",
+    ClearMask_sd = "SD"
+  ) %>%
+  gt::row_group_order(
+      groups = c("Intelligibility", "Vowels", "Consonants")
+    ) %>%
+  gt::gtsave(filename = "Data/Tables/DescriptivesTable.html")
+  
+```
+
+## Intelligibility
+```{r}
+intTableData <- base::merge(sentenceRatings, wordTrans_bySpeakerListener) %>%
+  pivot_longer(cols = VAS:transAcc,names_to = "IntType", values_to = "Int") %>%
+  dplyr::mutate(IntType = ifelse(IntType == "VAS","Sentence (VAS)","Word (%)")) %>%
+  group_by(condition, IntType) %>%
+  dplyr::summarise(M = sprintf("%0.2f",mean(Int)),
+                   sd = sprintf("%0.2f",sd(Int))) %>%
+  ungroup() %>%
+  pivot_wider(names_from = condition, values_from = M:sd) %>%
+  dplyr::mutate(f = NA,
+                f = ifelse(IntType == "Sentence (VAS)",sentSum$`Error: speakerID:condition`[[1]][["F value"]][1],f),
+                f = ifelse(IntType == "Word (%)",wordSum$`Error: speakerID:condition`[[1]][["F value"]][1],f),
+                p = NA,
+                p = ifelse(IntType == "Sentence (VAS)",sentSum$`Error: speakerID:condition`[[1]][["Pr(>F)"]][1],p),
+                p = ifelse(IntType == "Word (%)",wordSum$`Error: speakerID:condition`[[1]][["Pr(>F)"]][1],p)) %>%
+  dplyr::mutate(f = sprintf("%0.3f",f),
+                p = ifelse(p < .001,"<.001",sprintf("%0.3f",p)))
+
+
+intTable <- 
+  gt(intTableData) %>%
+  gt::tab_header(
+    title = "Speech Intelligibility",
+    subtitle = " "
+  ) %>%
+  gt::tab_spanner(
+    label = "Clear,\nMask-on",
+    columns = c(M_ClearMask, sd_ClearMask)
+  ) %>%
+  gt::tab_spanner(
+    label = "Conversational,\nMask-on",
+    columns = c(M_ConvMask, sd_ConvMask)
+  ) %>%
+  gt::tab_spanner(
+    label = "Conversational,\nMask-off",
+    columns = c(M_ConvNoMask, sd_ConvNoMask)
+  ) %>%
+  cols_move_to_start(
+    columns = c(M_ConvMask, sd_ConvMask)
+  ) %>%
+  cols_move_to_start(
+    columns = c(M_ConvNoMask, sd_ConvNoMask)
+  ) %>%
+  cols_move_to_start(
+    columns = c(IntType)
+  ) %>%
+  cols_label(
+    IntType = "Intelligibility Method",
+    M_ConvNoMask = "M",
+    M_ConvMask = "M",
+    M_ClearMask = "M",
+    sd_ConvNoMask = "SD",
+    sd_ConvMask = "SD",
+    sd_ClearMask = "SD",
+    f = "F",
+    p = "p"
+  )
+intTable
+
+dir.create("Data/Tables", showWarnings = F)
+gtsave(intTable, "Data/Tables/Intelligibility.html")
+```
+
+## Vowels
+```{r}
+library(gt)
+
+vowelTableData <- VowelData_Wide %>%
+  dplyr::select(!c(SpeakerID,Word)) %>%
+  group_by(Condition, Sound) %>%
+  dplyr::summarise_all(mean) %>%
+  dplyr::ungroup()
+
+vowelTableData_condition <- vowelTableData %>%
+  dplyr::select(!Sound) %>%
+  group_by(Condition) %>%
+  dplyr::summarise_all(list(M = mean, SD = sd)) %>%
+  dplyr::ungroup() %>%
+  dplyr::mutate(Group = "Condition") %>%
+  dplyr::rename(Row = Condition)
+
+vowelTableData_vowel <- vowelTableData %>%
+  dplyr::select(!Condition) %>%
+  group_by(Sound) %>%
+  dplyr::summarise_all(list(M = mean, SD = sd)) %>%
+  dplyr::ungroup() %>%
+  dplyr::mutate(Group = "Vowel") %>%
+  dplyr::rename(Row = Sound)
+
+vowelTableData <- rbind(vowelTableData_condition,vowelTableData_vowel) %>%
+  dplyr::mutate(Duration = paste(sprintf("%0.2f", Duration_M)," (",sprintf("%0.2f", Duration_SD),")", sep = ""),
+                F1 = paste(sprintf("%0.2f", F1_M)," (",sprintf("%0.2f", F1_SD),")", sep = ""),
+                F2 = paste(sprintf("%0.2f", F2_M)," (",sprintf("%0.2f", F2_SD),")", sep = ""),
+                Ratio = paste(sprintf("%0.2f", Ratio_M)," (",sprintf("%0.2f", Ratio_SD),")", sep = "")) %>%
+  dplyr::select(Row,Group, Duration, F1, F2, Ratio) %>%
+  dplyr::mutate(Row = str_replace(Row,"ConvMask","Conversational, Mask-on"),
+                Row = str_replace(Row,"ConvNoMask","Conversational, Mask-off"),
+                Row = str_replace(Row,"ClearMask","Clear, Mask-on"),
+                Row = str_replace(Row,"^i$","/i/"),
+                Row = str_replace(Row,"^ae$","/æ/"),
+                Row = str_replace(Row,"^u$","/u/"),
+                Row = str_replace(Row,"^a$","/ɑ/")) %>%
+  mutate(Row = fct_relevel(Row, c("Conversational, Mask-off",
+                                  "Conversational, Mask-on",
+                                  "Clear, Mask-on",
+                                  "/i/",
+                                  "/æ/",
+                                  "/u/",
+                                  "/ɑ/"))) %>%
+    arrange(Row)
+
+  
+vowelTable <- 
+  gt(vowelTableData) %>%
+  gt::tab_header(
+    title = "Vowels",
+    subtitle = " "
+  ) %>%
+  tab_row_group(
+    label = "Condition",
+    rows = Group == "Condition"
+    ) %>%
+  tab_row_group(
+    label = "Vowel",
+    rows = Group == "Vowel"
+  ) %>%
+  cols_hide(
+    columns = Group
+    ) %>%
+    row_group_order(
+      groups = c("Condition", "Vowel")
+    ) %>% 
+  cols_label(
+    Duration = "Duration (ms)",
+    F1 = "F1 (Hz)",
+    F2 = "F2 (Hz)"
+  )
+vowelTable
+
+dir.create("Data/Tables", showWarnings = F)
+gtsave(vowelTable, "Data/Tables/Vowels.html")
+```
+
+## Consonants
+```{r}
+library(gt)
+
+consonantTableData <- MData_Wide %>%
+  dplyr::select(!c(SpeakerID,Word)) %>%
+  group_by(Condition, manner) %>%
+  dplyr::summarise_all(mean) %>%
+  dplyr::ungroup()
+
+consonantTableData_condition <- consonantTableData %>%
+  dplyr::select(!manner) %>%
+  group_by(Condition) %>%
+  dplyr::summarise_all(list(M = mean, SD = sd)) %>%
+  dplyr::ungroup() %>%
+  dplyr::mutate(Group = "Condition") %>%
+  dplyr::rename(Row = Condition)
+
+consonantTableData_manner <- consonantTableData %>%
+  dplyr::select(!Condition) %>%
+  group_by(manner) %>%
+  dplyr::summarise_all(list(M = mean, SD = sd)) %>%
+  dplyr::ungroup() %>%
+  dplyr::mutate(Group = "Manner") %>%
+  dplyr::rename(Row = manner)
+
+consonantTableData <- rbind(consonantTableData_condition,consonantTableData_manner) %>%
+  dplyr::mutate(M1 = paste(sprintf("%0.2f", M1_M)," (",sprintf("%0.2f", M1_SD),")", sep = ""),
+                M2 = paste(sprintf("%0.2f", M2_M)," (",sprintf("%0.2f", M2_SD),")", sep = ""),
+                M3 = paste(sprintf("%0.2f", M3_M)," (",sprintf("%0.2f", M3_SD),")", sep = ""),
+                M4 = paste(sprintf("%0.2f", M4_M)," (",sprintf("%0.2f", M4_SD),")", sep = "")) %>%
+  dplyr::select(Row,Group, M1, M2, M3, M4) %>%
+  dplyr::mutate(Row = str_replace(Row,"ConvMask","Conversational, Mask-on"),
+                Row = str_replace(Row,"ConvNoMask","Conversational, Mask-off"),
+                Row = str_replace(Row,"ClearMask","Clear, Mask-on"),
+                Row = str_replace(Row,"stop","Stop"),
+                Row = str_replace(Row,"fricative","Fricative")) %>%
+  mutate(Row = fct_relevel(Row, c("Conversational, Mask-off",
+                                  "Conversational, Mask-on",
+                                  "Clear, Mask-on",
+                                  "Stop",
+                                  "Fricative"))) %>%
+    arrange(Row)
+
+  
+consonantTable <- 
+  gt(consonantTableData) %>%
+  gt::tab_header(
+    title = "Consonants",
+    subtitle = " "
+  ) %>%
+  tab_row_group(
+    label = "Condition",
+    rows = Group == "Condition"
+    ) %>%
+  tab_row_group(
+    label = "Manner",
+    rows = Group == "Manner"
+  ) %>%
+  cols_hide(
+    columns = Group
+    ) %>%
+    row_group_order(
+      groups = c("Condition", "Manner")
+    ) 
+consonantTable
+
+dir.create("Data/Tables", showWarnings = F)
+gtsave(consonantTable, "Data/Tables/Consonants.html")
+```
+# Plots
+
+## VSA
+```{r}
+vsaData <- VowelData_Wide %>%
+  dplyr::select(!c(Ratio,Duration)) %>%
+  dplyr::group_by(Condition,Sound) %>%
+  dplyr::summarise(F1 = mean(F1),
+                   F2 = mean(F2))
+
+vsaPlot <- ggplot(vsaData, aes(x = F2, y = F1, color = Condition, fill = Condition)) +
+  geom_polygon(alpha = .7) +
+  scale_y_reverse() +
+  scale_x_reverse() +
+  theme_classic() +
+  scale_color_manual(values = my_pal, guide = "legend") +
+  scale_fill_manual(values = my_pal, guide = "legend")
+vsaPlot
+
+ggsave("Data/Plots/Distribution_VSA.png", plot = last_plot(),height = 5, width = 8, units = "in")
+
+```
+
+## Combining Line Plots
+```{r}
+ggpubr::ggarrange(linePlot_sentRatings,linePlot_wordAccuracy, ncol = 2, nrow = 1, common.legend = T, legend = "right")
+
+ggsave("Data/Plots/linePlot.png", plot = last_plot(), height = 5, width = 10, units = "in")
+```
+
+## Perceptual Plots
+```{r}
+library(extrafont) # install.packages('extrafont')
+
+## custom colors
+my_pal <- rcartocolor::carto_pal(n = 7, name = "Burg")[c(7, 5, 3, 2, 4)]
+
+## Theme ----
+theme_set(theme_void(base_family = "Roboto"))
+
+theme_update(
+  axis.text.x = element_text(color = "black", face = "bold", size = 26, 
+                             margin = margin(t = 6)),
+  axis.text.y = element_text(color = "black", size = 22, hjust = 1, 
+                             margin = margin(r = 6), family = "Roboto Mono"),
+  axis.line.x = element_line(color = "black", size = 1),
+  panel.grid.major.y = element_line(color = "grey90", size = .6),
+  plot.background = element_rect(fill = "white", color = "white"),
+  plot.margin = margin(rep(20, 4))
+)
+
+sentDifference <- sentenceRatings %>%
+  pivot_wider(names_from = condition,
+              values_from = VAS) %>%
+  dplyr::mutate(ConvNoMask_ConvMask =  ConvMask - ConvNoMask) %>%
+  dplyr::mutate(ConvNoMask_ClearMask =  ClearMask - ConvNoMask) %>%
+  dplyr::mutate(ConvMask_ClearMask =  ClearMask - ConvMask) %>%
+  dplyr::select(!c(ConvMask,ConvNoMask,ClearMask)) %>%
+  pivot_longer(cols = c(ConvNoMask_ConvMask,ConvNoMask_ClearMask,ConvMask_ClearMask), 
+               names_to = "conditionDiff",
+               values_to = "VASDiff") %>%
+  dplyr::mutate(conditionDiff = as.factor(conditionDiff))
+
+wordDifference <- wordTrans_bySpeakerListener %>%
+  pivot_wider(names_from = condition,
+              values_from = transAcc) %>%
+  dplyr::mutate(ConvNoMask_ConvMask =  ConvMask - ConvNoMask) %>%
+  dplyr::mutate(ConvNoMask_ClearMask =  ClearMask - ConvNoMask) %>%
+  dplyr::mutate(ConvMask_ClearMask =  ClearMask - ConvMask) %>%
+  dplyr::select(!c(ConvMask,ConvNoMask,ClearMask)) %>%
+  pivot_longer(cols = c(ConvNoMask_ConvMask,ConvNoMask_ClearMask,ConvMask_ClearMask), 
+               names_to = "conditionDiff",
+               values_to = "transAccDiff")
+
+contrastLabels <- c("Conversational Mask-on → Clear Mask-on",
+                    "Conversational Mask-off → Clear Mask-on",
+                    "Conversational Mask-off → Conversational Mask-on")
+
+intDifference <- rbind(wordDifference %>%
+                         dplyr::mutate(intType = "Word Transcriptions (% Accuracy)") %>%
+                         dplyr::rename(intRating = transAccDiff),
+                       sentDifference %>%
+                         dplyr::mutate(intType = "Sentence Ratings (VAS)") %>%
+                         dplyr::rename(intRating = VASDiff)) %>%
+  dplyr::mutate(intType = as.factor(intType),
+                conditionDiff = case_when(
+                  conditionDiff == "ConvMask_ClearMask" ~ "Conversational, Mask-on →\nClear, Mask-on     ",
+                  conditionDiff == "ConvNoMask_ClearMask" ~ "Conversational, Mask-off →\nClear, Mask-on     ",
+                  conditionDiff == "ConvNoMask_ConvMask" ~ "Conversational, Mask-off →\nConversational, Mask-on     "
+                ),
+                conditionDiff = factor(conditionDiff, levels = c("Conversational, Mask-on →\nClear, Mask-on     ",
+                                                                 "Conversational, Mask-off →\nClear, Mask-on     ",
+                                                                 "Conversational, Mask-off →\nConversational, Mask-on     ")),
+                ID = as.factor(ID),
+                speakerID = as.factor(speakerID))
+
+# Difference Plots: Sentence Both ---- 
+intPlot <- ggplot(data = intDifference,
+       aes(x = conditionDiff,
+           y = intRating,
+           color = conditionDiff,
+           fill = conditionDiff)) + 
+  ggdist::stat_halfeye(
+    aes(alpha = stat(y < 0)),
+    adjust = 1.8, 
+    width = .6, 
+    .width = 0, 
+    justification = -.2,
+    point_colour = NA,
+    outline_bars = T
+  ) + 
+  scale_alpha_discrete(range = c(.4,.9), guide = "none") +
+  geom_boxplot(
+    width = .15, 
+    outlier.shape = NA,
+    fill = "white"
+  ) +
+  ## add justified jitter from the {gghalves} package
+  gghalves::geom_half_point(
+    ## draw jitter on the left
+    side = "l", 
+    ## control range of jitter
+    range_scale = .4, 
+    ## add some transparency
+    alpha = .3
+  ) +
+  geom_hline(yintercept = 0, alpha = 0.25) +
+  coord_cartesian() +
+  coord_flip(ylim = c(-25, 25), clip = "on") +
+  scale_color_manual(values = my_pal, guide = "none") +
+  scale_fill_manual(values = my_pal, guide = "none") +
+  #labs(title = "Sentence Ratings") +
+  ylab("Intelligibility Change") +
+  xlab("") +
+  theme_classic() +
+  facet_wrap(~intType, scales = "free_x") +
+  theme(
+    plot.title = element_text(hjust = 0.5),
+    text = element_text(size = 13, family = "Arial Bold"))
+
+intPlot
+#ggsave("Data/Plots/Distribution_sentDiff.png", plot = sentencePlot,height = 5, width = 8, units = "in")
+
+
+#ggpubr::ggarrange(sentencePlot,wordPlot, ncol = 2, nrow = 1)
+ggsave("Data/Plots/IntFigure.png", plot = last_plot(),height = 4, width = 8, units = "in", scale = 1)
+
+```
+
+
+```{r}
+# Sentence Ratings ----                                                       
+ggplot(data = sentenceRatings_bySpeaker %>%
+         dplyr::mutate(
+           condition = dplyr::recode_factor(condition,
+                                            'ClearMask' = 'Mask\n(Clear)',
+                                            'ConvNoMask' = 'No Mask\n(Conversational)',
+                                            'ConvMask' = 'Mask\n(Conversational)')) %>%
+         dplyr::mutate(
+           condition = fct_relevel(condition, levels = 'Mask\n(Clear)',
+                                   'Mask\n(Conversational)',
+                                   'No Mask\n(Conversational)')),
+       aes(x = condition,
+           y = VAS,
+           color = condition,
+           fill = condition)) + 
+  ggdist::stat_halfeye(
+    adjust = .5, 
+    width = .6, 
+    .width = 0, 
+    justification = -.2, 
+    point_colour = NA
+  ) + 
+  geom_boxplot(
+    width = .15, 
+    outlier.shape = NA,
+    fill = "white"
+  ) +
+  ## add justified jitter from the {gghalves} package
+  gghalves::geom_half_point(
+    ## draw jitter on the left
+    side = "l", 
+    ## control range of jitter
+    range_scale = .4, 
+    ## add some transparency
+    alpha = .3
+  ) +
+  coord_cartesian(xlim = c(1.2, NA), clip = "off") +
+  coord_flip() +
+  scale_color_manual(values = my_pal, guide = "none") +
+  scale_fill_manual(values = my_pal, guide = "none") +
+  labs(title = "Sentence Ratings") +
+  ylab("Intelligibility") +
+  xlab("") +
+  theme_classic() +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  theme(text=element_text(size = 13, 
+        family="Arial Bold"))
+
+ggsave("Data/Plots/Distribution_transAcc.png", plot = last_plot(),height = 5, width = 7, units = "in")
+
+
+# Word Transcriptions - By speaker & Listener ----                                                       
+ggplot(wordTrans_bySpeakerListener %>%
+         dplyr::mutate(
+           condition = dplyr::recode_factor(condition,
+                                            'ClearMask' = 'Mask\n(Clear)',
+                                            'ConvNoMask' = 'No Mask\n(Conversational)',
+                                            'ConvMask' = 'Mask\n(Conversational)')) %>%
+         dplyr::mutate(
+           condition = fct_relevel(condition, levels = 'Mask\n(Clear)',
+                                   'Mask\n(Conversational)',
+                                   'No Mask\n(Conversational)')),
+       aes(x = condition, 
+                                      y = transAcc, 
+                                      color = condition,
+                                      fill = condition)) + 
+  ggdist::stat_halfeye(
+    adjust = .5, 
+    width = .6, 
+    .width = 0, 
+    justification = -.2, 
+    point_colour = NA
+  ) + 
+  geom_boxplot(
+    width = .15, 
+    outlier.shape = NA,
+    fill = "white"
+  ) +
+  ## add justified jitter from the {gghalves} package
+  gghalves::geom_half_point(
+    ## draw jitter on the left
+    side = "l", 
+    ## control range of jitter
+    range_scale = .4, 
+    ## add some transparency
+    alpha = .3
+  ) +
+  coord_cartesian(xlim = c(1.2, NA), clip = "off") +
+  coord_flip() +
+  scale_color_manual(values = my_pal, guide = "none") +
+  scale_fill_manual(values = my_pal, guide = "none") +
+  labs(title = "Word Transcriptions") +
+  ylab("Transcription Accuracy (%)") +
+  xlab("") +
+  theme_classic() +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  theme(text=element_text(size = 13, 
+        family="Arial Bold"))
+
+#ggsave("Data/Plots/Distribution_sentRatings_bySpeakerListener.png", plot = last_plot(),height = 5, width = 7, units = "in")
+
+
+# Word Transcriptions - By speaker ----                                                       
+ggplot(words_bySpeaker %>%
+         dplyr::mutate(
+           condition = dplyr::recode_factor(condition,
+                                            'ClearMask' = 'Mask\n(Clear)',
+                                            'ConvNoMask' = 'No Mask\n(Conversational)',
+                                            'ConvMask' = 'Mask\n(Conversational)')) %>%
+         dplyr::mutate(
+           condition = fct_relevel(condition, levels = 'Mask\n(Clear)',
+                                   'Mask\n(Conversational)',
+                                   'No Mask\n(Conversational)')),
+       aes(x = condition, 
+                                      y = transAcc, 
+                                      color = condition,
+                                      fill = condition)) + 
+  ggdist::stat_halfeye(
+    adjust = .5, 
+    width = .6, 
+    .width = 0, 
+    justification = -.2, 
+    point_colour = NA
+  ) + 
+  geom_boxplot(
+    width = .15, 
+    outlier.shape = NA,
+    fill = "white"
+  ) +
+  ## add justified jitter from the {gghalves} package
+  gghalves::geom_half_point(
+    ## draw jitter on the left
+    side = "l", 
+    ## control range of jitter
+    range_scale = .4, 
+    ## add some transparency
+    alpha = .3
+  ) +
+  coord_cartesian(xlim = c(1.2, NA), clip = "off") +
+  coord_flip() +
+  scale_color_manual(values = my_pal, guide = "none") +
+  scale_fill_manual(values = my_pal, guide = "none") +
+  labs(title = "Word Transcriptions") +
+  ylab("Transcription Accuracy (%)") +
+  xlab("") +
+  theme_classic() +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  theme(text=element_text(size = 13, 
+        family="Arial Bold"))
+
+ggsave("Data/Plots/Distribution_sentRatings.png", plot = last_plot(),height = 5, width = 7, units = "in")
+
+
+```
+
+## Intensity Ratio Plot
+```{r}
+intensityRatioDiff <- intensityRatio_Long %>%
+  pivot_wider(names_from = Condition,
+              values_from = CV_Ratio) %>%
+  dplyr::mutate(ConvNoMask_ConvMask =  ConvMask - ConvNoMask) %>%
+  dplyr::mutate(ConvNoMask_ClearMask =  ClearMask - ConvNoMask) %>%
+  dplyr::mutate(ConvMask_ClearMask =  ClearMask - ConvMask) %>%
+  dplyr::select(!c(ConvMask,ConvNoMask,ClearMask)) %>%
+  pivot_longer(cols = c(ConvNoMask_ConvMask,ConvNoMask_ClearMask,ConvMask_ClearMask), 
+               names_to = "conditionDiff",
+               values_to = "CV_RatioDiff")
+
+# Difference Plots: Sentence Ratings ---- 
+
+## custom colors
+my_pal <- rcartocolor::carto_pal(n = 7, name = "Burg")[c(7, 5, 3, 2, 4)]
+
+ggplot(data = intensityRatioDiff,
+       aes(x = conditionDiff,
+           y = CV_RatioDiff,
+           color = conditionDiff,
+           fill = conditionDiff)) + 
+  ggdist::stat_halfeye(
+    aes(alpha = stat(y < 0)),
+    adjust = 1.3, 
+    width = .6, 
+    .width = 0, 
+    justification = -.2,
+    point_colour = NA,
+    outline_bars = T
+  ) + 
+  scale_alpha_discrete(range = c(.4,.9), guide = "none") +
+  geom_boxplot(
+    width = .15, 
+    outlier.shape = NA,
+    fill = "white"
+  ) +
+  ## add justified jitter from the {gghalves} package
+  gghalves::geom_half_point(
+    ## draw jitter on the left
+    side = "l", 
+    ## control range of jitter
+    range_scale = .4, 
+    ## add some transparency
+    alpha = .3,
+    aes(fill = stat(y < 0))
+  ) +
+  geom_hline(yintercept = 0, alpha = 0.25) +
+  coord_cartesian(xlim = c(1.2, NA), clip = "off") +
+  coord_flip(ylim = c(-4, 4), clip = "on") +
+  scale_color_manual(values = my_pal, guide = "none") +
+  scale_fill_manual(values = my_pal, guide = "none") +
+  labs(title = "Intensity Ratio") +
+  ylab("Ratio Change") +
+  xlab("") +
+  theme_classic() +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  theme(text=element_text(size = 13, 
+        family="Arial Bold"))
+
+ggsave("Data/Plots/Distribution_RatioDiff.png", plot = last_plot(),height = 5, width = 8, units = "in")
+
+
+# Line Plot
+linePlot_mannerCond <- ggplot(data = intensityRatio_Long %>%
+           group_by(manner,Condition) %>%
+           summarize(CV_Ratio = mean(CV_Ratio, na.rm =T),.groups = "rowwise") %>%
+           dplyr::mutate(manner = dplyr::recode_factor(manner,'fricative' = 'Fricative','stop' = 'Stop')
+                         )) +
+  aes(x = Condition, 
+      y = CV_Ratio,
+      group = manner,
+      color = manner) +
+  geom_point() +
+  geom_line() +
+  theme_classic() +
+  xlab("") +
+  ylab("CV Intensity Ratio") +
+  ggtitle("CV Intensity Ratio") +
+  scale_color_manual(values = my_pal) +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  coord_cartesian(ylim = c(1,4)) +
+  labs(color='Manner') 
+linePlot_mannerCond
+
+ggsave("Data/Plots/linePlot_mannerCond.png", plot = last_plot(), height = 3, width = 4, units = "in")
+```
+
+## M1 Plots
+```{r}
+
+## custom colors
+my_pal <- rcartocolor::carto_pal(n = 8, name = "Burg")[c(7, 5, 3, 2,4)]
+
+
+M1Difference <- MData_Wide %>%
+  dplyr::select(SpeakerID,Condition,Word,manner, M1) %>%
+  pivot_wider(names_from = Condition,
+              values_from = M1) %>%
+  dplyr::mutate(ConvNoMask_ConvMask =  ConvMask - ConvNoMask) %>%
+  dplyr::mutate(ConvNoMask_ClearMask =  ClearMask - ConvNoMask) %>%
+  dplyr::mutate(ConvMask_ClearMask =  ClearMask - ConvMask) %>%
+  dplyr::select(!c(ConvMask,ConvNoMask,ClearMask)) %>%
+  pivot_longer(cols = c(ConvNoMask_ConvMask,ConvNoMask_ClearMask,ConvMask_ClearMask), 
+               names_to = "conditionDiff",
+               values_to = "M1Diff")
+
+# Difference Plots: Word Trans ----                                                       
+ggplot(data = M1Difference,
+       aes(x = conditionDiff,
+           y = M1Diff,
+           color = conditionDiff,
+           fill = conditionDiff)) + 
+  ggdist::stat_halfeye(
+    aes(alpha = stat(y < 0)),
+    adjust = 1.3, 
+    width = .6, 
+    .width = 0, 
+    justification = -.2,
+    point_colour = NA,
+    outline_bars = T
+  ) + 
+  scale_alpha_discrete(range = c(.4,.9), guide = "none") +
+  geom_boxplot(
+    width = .15, 
+    outlier.shape = NA,
+    fill = "white"
+  ) +
+  ## add justified jitter from the {gghalves} package
+  gghalves::geom_half_point(
+    ## draw jitter on the left
+    side = "l", 
+    ## control range of jitter
+    range_scale = .4, 
+    ## add some transparency
+    alpha = .3
+  ) +
+  geom_hline(yintercept = 0, alpha = 0.25) +
+  coord_cartesian(xlim = c(1.2, NA), clip = "off") +
+  coord_flip() +
+  scale_color_manual(values = my_pal, guide = "none") +
+  scale_fill_manual(values = my_pal, guide = "none") +
+  labs(title = "M1") +
+  ylab("M1 Change") +
+  xlab("") +
+  theme_classic() +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  theme(text=element_text(size = 13, 
+        family="Arial Bold"))
+
+ggsave("Data/Plots/Distribution_M1Diff.png", plot = last_plot(),height = 5, width = 8, units = "in")
+```
+
+
+## Alluvial Plots
+```{r}
+C1_alluvialData_ConvNoMask <- wordTrans %>%
+  dplyr::filter(sylCount == 1) %>%
+  dplyr::filter(condition == "ConvNoMask") %>%
+  dplyr::mutate(classCorrect = ifelse(tC1_class == eC1_class,TRUE,FALSE)) %>%
+  dplyr::group_by(tC1_class,eC1_class,classCorrect) %>%
+  dplyr::summarise(freq = n())
+
+ggplot(data = C1_alluvialData_ConvNoMask,
+       aes(axis1 = tC1_class, axis2 = eC1_class,
+           y = freq)) +
+  scale_x_discrete(limits = c("tC1_class", "eC1_class"), expand = c(.2, .05)) +
+  xlab("Manner") +
+  ggalluvial::geom_alluvium(aes(fill = classCorrect)) +
+  ggalluvial::geom_stratum() +
+  geom_text(stat = "stratum", aes(label = after_stat(stratum))) +
+  theme_minimal() +
+  ggtitle("ConvNoMask - C1")
+
+C1_alluvialData_ConvMask <- wordTrans %>%
+  dplyr::filter(sylCount == 1) %>%
+  dplyr::filter(condition == "ConvMask") %>%
+  dplyr::mutate(classCorrect = ifelse(tC1_class == eC1_class,TRUE,FALSE)) %>%
+  dplyr::group_by(tC1_class,eC1_class,classCorrect) %>%
+  dplyr::summarise(freq = n())
+
+ggplot(data = C1_alluvialData_ConvMask,
+       aes(axis1 = tC1_class, axis2 = eC1_class,
+           y = freq)) +
+  scale_x_discrete(limits = c("tC1_class", "eC1_class"), expand = c(.2, .05)) +
+  xlab("Manner") +
+  ggalluvial::geom_alluvium(aes(fill = classCorrect)) +
+  ggalluvial::geom_stratum() +
+  geom_text(stat = "stratum", aes(label = after_stat(stratum))) +
+  theme_minimal() +
+  ggtitle("ConvMask - C1")
+
+```
+
+## Confusion Matrix Plots
+
+```{r}
+singleSyl <- wordTrans %>%
+  dplyr::filter(sylCount == 1,
+                eV != "iə",
+                eV != "eɪɑ",
+                eV != "uə",
+                eV != "") %>%
+  dplyr::mutate(eV = base::gsub("ɜ","ɛ",eV)) %>%
+  dplyr::mutate(eV = base::gsub("eɪ|aɪ|oʊ|aʊ","D",eV)) %>%
+  dplyr::mutate(tV = base::gsub("ɜ","ɛ",tV)) %>%
+  dplyr::mutate(tV = base::gsub("eɪ|aɪ|oʊ|aʊ","D",tV)) %>%
+  dplyr::mutate(eV = fct_relevel(eV, levels = 'i','ɪ','ɛ','æ','ɑ','ɔ','ʊ','u','ʌ','D')) %>%
+  dplyr::mutate(tV = fct_relevel(tV, levels = 'i','ɪ','ɛ','æ','ɑ','ɔ','ʊ','u','ʌ','D'))
+```
+
+### Vowels
+```{r}
+# V ----
+# Conv No Mask ----
+wordTrans_ConvNoMask <- singleSyl %>%
+  dplyr::filter(condition == "ConvNoMask") %>%
+  dplyr::filter(eV != " ")
+
+V_confMat_ConvNoMask <- confusion_matrix(wordTrans_ConvNoMask$tV,wordTrans_ConvNoMask$eV)
+V_ConvNoMask <- plot_confusion_matrix(V_confMat_ConvNoMask$`Confusion Matrix`[[1]],
+                                     target_col = "Target",
+                                     prediction_col = "Prediction",
+                                     class_order = levels(fct_rev(wordTrans_ConvNoMask$eV)),
+                                     counts_col = "N",
+                                     add_normalized = T,
+                                     add_row_percentages = F,
+                                     add_col_percentages = F,
+                                     add_zero_shading = F,
+                                     intensity_by = "counts",
+                                     palette = "Blues",
+                                     theme_fn = ggplot2::theme_light) +
+      ggtitle("Conversational") + theme(plot.title = element_text(hjust = 0.5)) +
+  xlab("Intended Vowel") + ylab("Perceived")
+V_ConvNoMask
+#ggsave("Data/Plots/V_ConvNoMask.png",plot = V_ConvNoMask, height = 10, width = 10, units = "in")
+
+# Conv Mask ----
+wordTrans_ConvMask <- singleSyl %>%
+  dplyr::filter(condition == "ConvMask")
+V_confMat_ConvMask <- confusion_matrix(wordTrans_ConvMask$tV,wordTrans_ConvMask$eV)
+V_ConvMask <- plot_confusion_matrix(V_confMat_ConvMask$`Confusion Matrix`[[1]],
+                                     target_col = "Target",
+                                     prediction_col = "Prediction",
+                                     class_order = levels(fct_rev(wordTrans_ConvNoMask$eV)),
+                                     counts_col = "N",
+                                     add_counts = F,
+                                     add_normalized = T,
+                                     add_row_percentages = F,
+                                     add_col_percentages = F,
+                                     add_zero_shading = F,
+                                     intensity_by = "counts",
+                                     palette = "Blues",
+                                     theme_fn = ggplot2::theme_light) +
+    ggtitle("Conversational with Mask") + theme(plot.title = element_text(hjust = 0.5)) +
+  xlab("Intended Vowel") + ylab("Perceived")
+V_ConvMask
+#ggsave("Data/Plots/V_ConvMask.png",plot = V_ConvMask, height = 10, width = 10, units = "in")
+
+# Clear Mask ----
+wordTrans_ClearMask <- singleSyl %>%
+  dplyr::filter(condition == "ClearMask")
+V_confMat_ClearMask <- confusion_matrix(wordTrans_ClearMask$tV,wordTrans_ClearMask$eV)
+V_ClearMask <- plot_confusion_matrix(V_confMat_ClearMask$`Confusion Matrix`[[1]],
+                                     target_col = "Target",
+                                     prediction_col = "Prediction",
+                                     class_order = levels(fct_rev(wordTrans_ConvNoMask$eV)),
+                                     counts_col = "N",
+                                     add_counts = F,
+                                     add_normalized = T,
+                                     add_row_percentages = F,
+                                     add_col_percentages = F,
+                                     add_zero_shading = F,
+                                     intensity_by = "counts",
+                                     palette = "Blues",
+                                     theme_fn = ggplot2::theme_light) +
+    ggtitle("Conversational with Mask") + theme(plot.title = element_text(hjust = 0.5)) +
+  xlab("Intended Vowel") + ylab("Perceived")
+V_ClearMask
+#ggsave("Data/Plots/V_ConvMask.png",plot = V_ConvMask, height = 10, width = 10, units = "in")
+
+# Difference Plot ----
+percent_ConvNoMask <- (V_confMat_ConvNoMask$Table[[1]]/sum(V_confMat_ConvNoMask$Table[[1]]))*100
+percent_ConvMask <- (V_confMat_ConvMask$Table[[1]]/sum(V_confMat_ConvMask$Table[[1]]))*100
+percent_ClearMask <- (V_confMat_ClearMask$Table[[1]]/sum(V_confMat_ClearMask$Table[[1]]))*100
+
+diff_percent_ConvNoMask_ConvMask <- as.data.frame(percent_ConvMask - percent_ConvNoMask) %>%
+  dplyr::rename(N = Freq)
+diff_percent_ConvNoMask_ClearMask <- as.data.frame(percent_ClearMask - percent_ConvNoMask) %>%
+  dplyr::rename(N = Freq)
+diff_percent_ConvMask_ClearMask <- as.data.frame(percent_ClearMask - percent_ConvMask) %>%
+  dplyr::rename(N = Freq)
+
+diff_percent <- rbind(diff_percent_ConvNoMask_ConvMask,
+                      diff_percent_ConvNoMask_ClearMask,
+                      diff_percent_ConvMask_ClearMask)
+
+## ConvNoMask vs. ConvMask ----
+diffData <- diff_percent_ConvNoMask_ConvMask %>%
+         dplyr::mutate(Target = as.factor(Target),
+                       Target = fct_relevel(Target, levels = 'i','ɪ','ɛ','æ','ɑ','ɔ','ʊ','u','ʌ','D'),
+                       Prediction = as.factor(Prediction),
+                       Prediction = fct_relevel(Prediction, levels = 'i','ɪ','ɛ','æ','ɑ','ɔ','ʊ','u','ʌ','D'))
+
+pdiff_percent_ConvNoMask_ConvMask <- ggplot(diffData,
+       aes(x = Target, y = Prediction, fill = N)) +
+  geom_tile() +
+  scale_fill_gradient2(limits = c(base::min(diff_percent$N), base::max(diff_percent$N))) +
+  geom_text(data = diffData %>%
+           dplyr::filter(abs(N) > .05),
+         aes(label = sprintf("%1.2f%%", N)), color = "black", size = 2) +
+  coord_fixed() +
+  scale_x_discrete(position = "top") +
+  scale_y_discrete(limits = rev) +
+  theme_bw() +
+  theme(legend.position="none") +
+  xlab(label = "Target") +
+  ylab(label = "Perceived")
+pdiff_percent_ConvNoMask_ConvMask
+
+ggsave("Data/Plots/VowelHeatmap_NoMask_ConvMask.png",plot = last_plot(), height = 4, width = 4, units = "in")
+
+## ConvNoMask vs. ClearMask ----
+diffData <- diff_percent_ConvNoMask_ClearMask %>%
+         dplyr::mutate(Target = as.factor(Target),
+                       Target = fct_relevel(Target, levels = 'i','ɪ','ɛ','æ','ɑ','ɔ','ʊ','u','ʌ','D'),
+                       Prediction = as.factor(Prediction),
+                       Prediction = fct_relevel(Prediction, levels = 'i','ɪ','ɛ','æ','ɑ','ɔ','ʊ','u','ʌ','D'))
+
+pdiff_percent_ConvNoMask_ClearMask <- ggplot(diffData,
+       aes(x = Target, y = Prediction, fill = N)) +
+  geom_tile() +
+  scale_fill_gradient2(limits = c(base::min(diff_percent$N), base::max(diff_percent$N))) +
+  geom_text(data = diffData %>%
+           dplyr::filter(abs(N) > .05),
+         aes(label = sprintf("%1.2f%%", N)), color = "black", size = 2) +
+  coord_fixed() +
+  scale_x_discrete(position = "top") +
+  scale_y_discrete(limits = rev) +
+  theme_bw() +
+  theme(legend.position="none") +
+  xlab(label = "Target") +
+  ylab(label = "Perceived")
+pdiff_percent_ConvNoMask_ClearMask
+
+ggsave("Data/Plots/VowelHeatmap_ConvNoMask_ClearMask.png",plot = last_plot(), height = 4, width = 4, units = "in")
+## ConvMask vs. ClearMask ----
+diffData <- diff_percent_ConvMask_ClearMask %>%
+         dplyr::mutate(Target = as.factor(Target),
+                       Target = fct_relevel(Target, levels = 'i','ɪ','ɛ','æ','ɑ','ɔ','ʊ','u','ʌ','D'),
+                       Prediction = as.factor(Prediction),
+                       Prediction = fct_relevel(Prediction, levels = 'i','ɪ','ɛ','æ','ɑ','ɔ','ʊ','u','ʌ','D'))
+
+pdiff_percent_ConvMask_ClearMask <- ggplot(diffData,
+       aes(x = Target, y = Prediction, fill = N)) +
+  geom_tile() +
+  scale_fill_gradient2(limits = c(base::min(diff_percent$N), base::max(diff_percent$N))) +
+  geom_text(data = diffData %>%
+           dplyr::filter(abs(N) > .05),
+         aes(label = sprintf("%1.2f%%", N)), color = "black", size = 2) +
+  coord_fixed() +
+  scale_x_discrete(position = "top") +
+  scale_y_discrete(limits = rev) +
+  theme_bw() +
+  theme(legend.position="none") +
+  xlab(label = "Target") +
+  ylab(label = "Perceived")
+pdiff_percent_ConvMask_ClearMask
+
+ggsave("Data/Plots/VowelHeatmap_ConvMask_ClearMask.png",plot = last_plot(), height = 4, width = 4, units = "in")
+
+## Combined ----
+V_diffPlot <- ggpubr::ggarrange(pdiff_percent_ConvNoMask_ConvMask,pdiff_percent_ConvNoMask_ClearMask, pdiff_percent_ConvMask_ClearMask,
+                                ncol = 3,
+                                nrow = 1)
+
+V_diffPlot
+ggsave("Data/Plots/VowelHeatmap_vDiff.png",plot = last_plot(), height = 4, width = 10, units = "in")
+```
+
+### C1 - Manner
+```{r}
+# C1 ----
+singleSyl <- singleSyl %>%
+  dplyr::mutate(tC1_class = dplyr::recode_factor(tC1_class,
+                                            'stop' = 'Stop',
+                                            'fricative' = 'Fricative',
+                                            'affricate' = 'Affricate',
+                                            'nasal' = 'Nasal')) %>%
+  dplyr::mutate(eC1_class = dplyr::recode_factor(eC1_class,
+                                            'stop' = 'Stop',
+                                            'fricative' = 'Fricative',
+                                            'affricate' = 'Affricate',
+                                            'nasal' = 'Nasal')) %>%
+  dplyr::mutate(tC1_class = fct_relevel(tC1_class, levels = "Stop", "Fricative","Affricate","Nasal","-")) %>%
+  dplyr::mutate(tV = fct_relevel(eC1_class, levels = "Stop", "Fricative","Affricate","Nasal","-"))
+
+# Conv No Mask ----
+wordTrans_ConvNoMask <- singleSyl %>%
+  dplyr::filter(condition == "ConvNoMask")
+
+C1_confMat_ConvNoMask <- confusion_matrix(wordTrans_ConvNoMask$tC1_class,wordTrans_ConvNoMask$eC1_class)
+C1_ConvNoMask <- plot_confusion_matrix(C1_confMat_ConvNoMask$`Confusion Matrix`[[1]],
+                                     target_col = "Target",
+                                     prediction_col = "Prediction",
+                                     class_order = levels(fct_rev(wordTrans_ConvNoMask$eC1_class)),
+                                     counts_col = "N",
+                                     add_normalized = T,
+                                     add_row_percentages = F,
+                                     add_col_percentages = F,
+                                     add_zero_shading = F,
+                                     intensity_by = "counts",
+                                     palette = "Blues",
+                                     theme_fn = ggplot2::theme_light) +
+      #ggtitle("Conversational") + theme(plot.title = element_text(hjust = 0.5)) +
+  xlab("Intended Consonant") + ylab("Perceived")
+C1_ConvNoMask
+#ggsave("Data/Plots/V_ConvNoMask.png",plot = V_ConvNoMask, height = 10, width = 10, units = "in")
+
+# Conv Mask ----
+wordTrans_ConvMask <- singleSyl %>%
+  dplyr::filter(condition == "ConvMask")
+C1_confMat_ConvMask <- confusion_matrix(wordTrans_ConvMask$tC1_class,wordTrans_ConvMask$eC1_class)
+C1_ConvMask <- plot_confusion_matrix(C1_confMat_ConvMask$`Confusion Matrix`[[1]],
+                                     target_col = "Target",
+                                     prediction_col = "Prediction",
+                                     class_order = levels(fct_rev(wordTrans_ConvNoMask$eC1_class)),
+                                     counts_col = "N",
+                                     add_counts = F,
+                                     add_normalized = T,
+                                     add_row_percentages = F,
+                                     add_col_percentages = F,
+                                     add_zero_shading = F,
+                                     intensity_by = "counts",
+                                     palette = "Blues",
+                                     theme_fn = ggplot2::theme_light) +
+    #ggtitle("Conversational with Mask") + theme(plot.title = element_text(hjust = 0.5)) +
+  xlab("Intended Consonant") + ylab("Perceived")
+C1_ConvMask
+#ggsave("Data/Plots/V_ConvMask.png",plot = V_ConvMask, height = 10, width = 10, units = "in")
+
+# Clear Mask ----
+wordTrans_ClearMask <- singleSyl %>%
+  dplyr::filter(condition == "ClearMask")
+C1_confMat_ClearMask <- confusion_matrix(wordTrans_ClearMask$tC1_class,wordTrans_ClearMask$eC1_class)
+C1_ClearMask <- plot_confusion_matrix(C1_confMat_ClearMask$`Confusion Matrix`[[1]],
+                                     target_col = "Target",
+                                     prediction_col = "Prediction",
+                                     class_order = levels(fct_rev(wordTrans_ConvNoMask$eC1_class)),
+                                     counts_col = "N",
+                                     add_counts = F,
+                                     add_normalized = T,
+                                     add_row_percentages = F,
+                                     add_col_percentages = F,
+                                     add_zero_shading = F,
+                                     intensity_by = "counts",
+                                     palette = "Blues",
+                                     theme_fn = ggplot2::theme_light) +
+    #ggtitle("Conversational with Mask") + theme(plot.title = element_text(hjust = 0.5)) +
+  xlab("Intended Consonant") + ylab("Perceived")
+C1_ClearMask
+#ggsave("Data/Plots/V_ConvMask.png",plot = V_ConvMask, height = 10, width = 10, units = "in")
+
+# Difference Plot ----
+percent_ConvNoMask <- (C1_confMat_ConvNoMask$Table[[1]]/sum(C1_confMat_ConvNoMask$Table[[1]]))*100
+percent_ConvMask <- (C1_confMat_ConvMask$Table[[1]]/sum(C1_confMat_ConvMask$Table[[1]]))*100
+percent_ClearMask <- (C1_confMat_ClearMask$Table[[1]]/sum(C1_confMat_ClearMask$Table[[1]]))*100
+
+diff_percent_ConvNoMask_ConvMask <- as.data.frame(percent_ConvMask - percent_ConvNoMask) %>%
+  dplyr::rename(N = Freq)
+diff_percent_ConvNoMask_ClearMask <- as.data.frame(percent_ClearMask - percent_ConvNoMask) %>%
+  dplyr::rename(N = Freq)
+diff_percent_ConvMask_ClearMask <- as.data.frame(percent_ClearMask - percent_ConvMask) %>%
+  dplyr::rename(N = Freq)
+
+diff_percent <- rbind(diff_percent_ConvNoMask_ConvMask,
+                      diff_percent_ConvNoMask_ClearMask,
+                      diff_percent_ConvMask_ClearMask)
+
+## ConvNoMask vs. ConvMask ----
+diffData <- diff_percent_ConvNoMask_ConvMask %>%
+         dplyr::mutate(Target = as.factor(Target),
+                       Target = fct_relevel(Target, levels = "Stop", "Fricative","Affricate","Nasal","-"),
+                       Prediction = as.factor(Prediction),
+                       Prediction = fct_relevel(Prediction, levels = "Stop", "Fricative","Affricate","Nasal","-"))
+
+pdiff_percent_ConvNoMask_ConvMask <- ggplot(diffData,
+       aes(x = Target, y = Prediction, fill = N)) +
+  geom_tile() +
+  scale_fill_gradient2(limits = c(base::min(diff_percent$N), base::max(diff_percent$N))) +
+  geom_text(data = diffData %>%
+           dplyr::filter(abs(N) > .05),
+         aes(label = sprintf("%1.2f%%", N)), color = "black", size = 2) +
+  coord_fixed() +
+  scale_x_discrete(position = "top") +
+  scale_y_discrete(limits = rev) +
+  theme_bw() +
+  theme(legend.position="none") +
+  xlab(label = "Target") +
+  ylab(label = "Perceived") +
+  theme(axis.text.x=element_text(angle = 45, hjust = 0))
+pdiff_percent_ConvNoMask_ConvMask
+
+ggsave("Data/Plots/C1Heatmap_NoMask_ConvMask.png",plot = last_plot(), height = 4, width = 4, units = "in")
+
+## ConvNoMask vs. ClearMask ----
+diffData <- diff_percent_ConvNoMask_ClearMask %>%
+         dplyr::mutate(Target = as.factor(Target),
+                       Target = fct_relevel(Target, levels = "Stop", "Fricative","Affricate","Nasal","-"),
+                       Prediction = as.factor(Prediction),
+                       Prediction = fct_relevel(Prediction, levels = "Stop", "Fricative","Affricate","Nasal","-"))
+
+pdiff_percent_ConvNoMask_ClearMask <- ggplot(diffData,
+       aes(x = Target, y = Prediction, fill = N)) +
+  geom_tile() +
+  scale_fill_gradient2(limits = c(base::min(diff_percent$N), base::max(diff_percent$N))) +
+  geom_text(data = diffData %>%
+           dplyr::filter(abs(N) > .05),
+         aes(label = sprintf("%1.2f%%", N)), color = "black", size = 2) +
+  coord_fixed() +
+  scale_x_discrete(position = "top") +
+  scale_y_discrete(limits = rev) +
+  theme_bw() +
+  theme(legend.position="none") +
+  xlab(label = "Target") +
+  ylab(label = "Perceived") +
+  theme(axis.text.x=element_text(angle = 45, hjust = 0))
+pdiff_percent_ConvNoMask_ClearMask
+
+ggsave("Data/Plots/C1Heatmap_ConvNoMask_ClearMask.png",plot = last_plot(), height = 4, width = 4, units = "in")
+## ConvMask vs. ClearMask ----
+diffData <- diff_percent_ConvMask_ClearMask %>%
+         dplyr::mutate(Target = as.factor(Target),
+                       Target = fct_relevel(Target, levels = "Stop", "Fricative","Affricate","Nasal","-"),
+                       Prediction = as.factor(Prediction),
+                       Prediction = fct_relevel(Prediction, levels = "Stop", "Fricative","Affricate","Nasal","-"))
+
+pdiff_percent_ConvMask_ClearMask <- ggplot(diffData,
+       aes(x = Target, y = Prediction, fill = N)) +
+  geom_tile() +
+  scale_fill_gradient2(limits = c(base::min(diff_percent$N), base::max(diff_percent$N))) +
+  geom_text(data = diffData %>%
+           dplyr::filter(abs(N) > .05),
+         aes(label = sprintf("%1.2f%%", N)), color = "black", size = 2) +
+  coord_fixed() +
+  scale_x_discrete(position = "top") +
+  scale_y_discrete(limits = rev) +
+  theme_bw() +
+  theme(legend.position="none") +
+  xlab(label = "Target") +
+  ylab(label = "Perceived") +
+  theme(axis.text.x=element_text(angle = 45, hjust = 0))
+pdiff_percent_ConvMask_ClearMask
+
+ggsave("Data/Plots/C1Heatmap_ConvMask_ClearMask.png",plot = last_plot(), height = 4, width = 4, units = "in")
+
+## Combined ----
+C1_diffPlot <- ggpubr::ggarrange(pdiff_percent_ConvNoMask_ConvMask,pdiff_percent_ConvNoMask_ClearMask, pdiff_percent_ConvMask_ClearMask,
+                                ncol = 3,
+                                nrow = 1)
+
+C1_diffPlot
+ggsave("Data/Plots/C1Heatmap_C1Diff.png",plot = last_plot(), height = 4, width = 10, units = "in")
+
+
+```
+
+### C2 - Manner
+```{r}
+# C2 ----
+singleSyl <- singleSyl %>%
+  dplyr::mutate(tC2_class = dplyr::recode_factor(tC2_class,
+                                            'stop' = 'Stop',
+                                            'fricative' = 'Fricative',
+                                            'affricate' = 'Affricate',
+                                            'nasal' = 'Nasal')) %>%
+  dplyr::mutate(eC2_class = dplyr::recode_factor(eC2_class,
+                                            'stop' = 'Stop',
+                                            'fricative' = 'Fricative',
+                                            'affricate' = 'Affricate',
+                                            'nasal' = 'Nasal')) %>%
+  dplyr::mutate(tC2_class = fct_relevel(tC2_class, levels = "Stop", "Fricative","Affricate","Nasal","-")) %>%
+  dplyr::mutate(tV = fct_relevel(eC2_class, levels = "Stop", "Fricative","Affricate","Nasal","-"))
+
+lvls <- c("Stop", "Fricative","Affricate","Nasal","-")
+# Conv No Mask ----
+wordTrans_ConvNoMask <- singleSyl %>%
+  dplyr::filter(condition == "ConvNoMask")
+
+C2_confMat_ConvNoMask <- confusion_matrix(wordTrans_ConvNoMask$tC2_class,wordTrans_ConvNoMask$eC2_class)
+C2_ConvNoMask <- plot_confusion_matrix(C2_confMat_ConvNoMask$`Confusion Matrix`[[1]],
+                                     target_col = "Target",
+                                     prediction_col = "Prediction",
+                                     class_order = levels(lvls),
+                                     counts_col = "N",
+                                     add_normalized = T,
+                                     add_row_percentages = F,
+                                     add_col_percentages = F,
+                                     add_zero_shading = F,
+                                     intensity_by = "counts",
+                                     palette = "Blues",
+                                     theme_fn = ggplot2::theme_light) +
+      #ggtitle("Conversational") + theme(plot.title = element_text(hjust = 0.5)) +
+  xlab("Intended Consonant") + ylab("Perceived")
+C2_ConvNoMask
+#ggsave("Data/Plots/V_ConvNoMask.png",plot = V_ConvNoMask, height = 10, width = 10, units = "in")
+
+# Conv Mask ----
+wordTrans_ConvMask <- singleSyl %>%
+  dplyr::filter(condition == "ConvMask")
+C2_confMat_ConvMask <- confusion_matrix(wordTrans_ConvMask$tC2_class,wordTrans_ConvMask$eC2_class)
+C2_ConvMask <- plot_confusion_matrix(C2_confMat_ConvMask$`Confusion Matrix`[[1]],
+                                     target_col = "Target",
+                                     prediction_col = "Prediction",
+                                     class_order = levels(lvls),
+                                     counts_col = "N",
+                                     add_counts = F,
+                                     add_normalized = T,
+                                     add_row_percentages = F,
+                                     add_col_percentages = F,
+                                     add_zero_shading = F,
+                                     intensity_by = "counts",
+                                     palette = "Blues",
+                                     theme_fn = ggplot2::theme_light) +
+    #ggtitle("Conversational with Mask") + theme(plot.title = element_text(hjust = 0.5)) +
+  xlab("Intended Consonant") + ylab("Perceived")
+C2_ConvMask
+#ggsave("Data/Plots/V_ConvMask.png",plot = V_ConvMask, height = 10, width = 10, units = "in")
+
+# Clear Mask ----
+wordTrans_ClearMask <- singleSyl %>%
+  dplyr::filter(condition == "ClearMask")
+C2_confMat_ClearMask <- confusion_matrix(wordTrans_ClearMask$tC2_class,wordTrans_ClearMask$eC2_class)
+C2_ClearMask <- plot_confusion_matrix(C2_confMat_ClearMask$`Confusion Matrix`[[1]],
+                                     target_col = "Target",
+                                     prediction_col = "Prediction",
+                                     class_order = levels(lvls),
+                                     counts_col = "N",
+                                     add_counts = F,
+                                     add_normalized = T,
+                                     add_row_percentages = F,
+                                     add_col_percentages = F,
+                                     add_zero_shading = F,
+                                     intensity_by = "counts",
+                                     palette = "Blues",
+                                     theme_fn = ggplot2::theme_light) +
+    #ggtitle("Conversational with Mask") + theme(plot.title = element_text(hjust = 0.5)) +
+  xlab("Intended Consonant") + ylab("Perceived")
+C2_ClearMask
+#ggsave("Data/Plots/V_ConvMask.png",plot = V_ConvMask, height = 10, width = 10, units = "in")
+
+# Difference Plot ----
+percent_ConvNoMask <- (C2_confMat_ConvNoMask$Table[[1]]/sum(C2_confMat_ConvNoMask$Table[[1]]))*100
+percent_ConvMask <- (C2_confMat_ConvMask$Table[[1]]/sum(C2_confMat_ConvMask$Table[[1]]))*100
+percent_ClearMask <- (C2_confMat_ClearMask$Table[[1]]/sum(C2_confMat_ClearMask$Table[[1]]))*100
+
+diff_percent_ConvNoMask_ConvMask <- as.data.frame(percent_ConvMask - percent_ConvNoMask) %>%
+  dplyr::rename(N = Freq)
+diff_percent_ConvNoMask_ClearMask <- as.data.frame(percent_ClearMask - percent_ConvNoMask) %>%
+  dplyr::rename(N = Freq)
+diff_percent_ConvMask_ClearMask <- as.data.frame(percent_ClearMask - percent_ConvMask) %>%
+  dplyr::rename(N = Freq)
+
+diff_percent <- rbind(diff_percent_ConvNoMask_ConvMask,
+                      diff_percent_ConvNoMask_ClearMask,
+                      diff_percent_ConvMask_ClearMask)
+
+## ConvNoMask vs. ConvMask ----
+diffData <- diff_percent_ConvNoMask_ConvMask %>%
+         dplyr::mutate(Target = as.factor(Target),
+                       Target = fct_relevel(Target, levels = "Stop", "Fricative","Affricate","Nasal","-"),
+                       Prediction = as.factor(Prediction),
+                       Prediction = fct_relevel(Prediction, levels = "Stop", "Fricative","Affricate","Nasal","-"))
+
+pdiff_percent_ConvNoMask_ConvMask <- ggplot(diffData,
+       aes(x = Target, y = Prediction, fill = N)) +
+  geom_tile() +
+  scale_fill_gradient2(limits = c(base::min(diff_percent$N), base::max(diff_percent$N))) +
+  geom_text(data = diffData %>%
+           dplyr::filter(abs(N) > .05),
+         aes(label = sprintf("%1.2f%%", N)), color = "black", size = 2) +
+  coord_fixed() +
+  scale_x_discrete(position = "top") +
+  scale_y_discrete(limits = rev) +
+  theme_bw() +
+  theme(legend.position="none") +
+  xlab(label = "Target") +
+  ylab(label = "Perceived") +
+  theme(axis.text.x=element_text(angle = 45, hjust = 0))
+pdiff_percent_ConvNoMask_ConvMask
+
+ggsave("Data/Plots/C2Heatmap_NoMask_ConvMask.png",plot = last_plot(), height = 4, width = 4, units = "in")
+
+## ConvNoMask vs. ClearMask ----
+diffData <- diff_percent_ConvNoMask_ClearMask %>%
+         dplyr::mutate(Target = as.factor(Target),
+                       Target = fct_relevel(Target, levels = "Stop", "Fricative","Affricate","Nasal","-"),
+                       Prediction = as.factor(Prediction),
+                       Prediction = fct_relevel(Prediction, levels = "Stop", "Fricative","Affricate","Nasal","-"))
+
+pdiff_percent_ConvNoMask_ClearMask <- ggplot(diffData,
+       aes(x = Target, y = Prediction, fill = N)) +
+  geom_tile() +
+  scale_fill_gradient2(limits = c(base::min(diff_percent$N), base::max(diff_percent$N))) +
+  geom_text(data = diffData %>%
+           dplyr::filter(abs(N) > .05),
+         aes(label = sprintf("%1.2f%%", N)), color = "black", size = 2) +
+  coord_fixed() +
+  scale_x_discrete(position = "top") +
+  scale_y_discrete(limits = rev) +
+  theme_bw() +
+  theme(legend.position="none") +
+  xlab(label = "Target") +
+  ylab(label = "Perceived") +
+  theme(axis.text.x=element_text(angle = 45, hjust = 0))
+pdiff_percent_ConvNoMask_ClearMask
+
+ggsave("Data/Plots/C2Heatmap_ConvNoMask_ClearMask.png",plot = last_plot(), height = 4, width = 4, units = "in")
+## ConvMask vs. ClearMask ----
+diffData <- diff_percent_ConvMask_ClearMask %>%
+         dplyr::mutate(Target = as.factor(Target),
+                       Target = fct_relevel(Target, levels = "Stop", "Fricative","Affricate","Nasal","-"),
+                       Prediction = as.factor(Prediction),
+                       Prediction = fct_relevel(Prediction, levels = "Stop", "Fricative","Affricate","Nasal","-"))
+
+pdiff_percent_ConvMask_ClearMask <- ggplot(diffData,
+       aes(x = Target, y = Prediction, fill = N)) +
+  geom_tile() +
+  scale_fill_gradient2(limits = c(base::min(diff_percent$N), base::max(diff_percent$N))) +
+  geom_text(data = diffData %>%
+           dplyr::filter(abs(N) > .05),
+         aes(label = sprintf("%1.2f%%", N)), color = "black", size = 2) +
+  coord_fixed() +
+  scale_x_discrete(position = "top") +
+  scale_y_discrete(limits = rev) +
+  theme_bw() +
+  theme(legend.position="none") +
+  xlab(label = "Target") +
+  ylab(label = "Perceived") +
+  theme(axis.text.x=element_text(angle = 45, hjust = 0))
+pdiff_percent_ConvMask_ClearMask
+
+ggsave("Data/Plots/C2Heatmap_ConvMask_ClearMask.png",plot = last_plot(), height = 4, width = 4, units = "in")
+
+## Combined ----
+C2_diffPlot <- ggpubr::ggarrange(pdiff_percent_ConvNoMask_ConvMask,pdiff_percent_ConvNoMask_ClearMask, pdiff_percent_ConvMask_ClearMask,
+                                ncol = 3,
+                                nrow = 1)
+
+C2_diffPlot
+ggsave("Data/Plots/C2Heatmap_C2Diff.png",plot = last_plot(), height = 4, width = 10, units = "in")
+
+
+```
+### Manuscript figure
+```{r}
+ggpubr::ggarrange(C1_diffPlot,C2_diffPlot,ncol=1,nrow=2)
+
+ggsave("Data/Plots/FigureConsonant.png",plot = last_plot(), height = 4, width = 6.5, units = "in", scale = 1.2)
+```
+
+### C1 - Place
+```{r}
+# C1 ----
+singleSyl <- singleSyl %>%
+  dplyr::mutate(tC1_place = dplyr::recode_factor(tC1_place,
+                                            'bilabial' = 'Bilabial',
+                                            'labiodental' = 'Labiodental',
+                                            'interdental' = 'Interdental',
+                                            'velar' = 'Velar',
+                                            'palatal' = 'Palatal',
+                                            'alveolar' = 'Alveolar')) %>%
+  dplyr::mutate(eC1_place = dplyr::recode_factor(eC1_place,
+                                            'bilabial' = 'Bilabial',
+                                            'labiodental' = 'Labiodental',
+                                            'interdental' = 'Interdental',
+                                            'velar' = 'Velar',
+                                            'palatal' = 'Palatal',
+                                            'alveolar' = 'Alveolar')) %>%
+  dplyr::mutate(tC1_place = fct_relevel(tC1_place, levels = "Bilabial", "Labiodental","Interdental","Alveolar","Palatal","Velar","-")) %>%
+  dplyr::mutate(eC1_place = fct_relevel(eC1_place, levels = "Bilabial", "Labiodental","Interdental","Alveolar","Palatal","Velar","-"))
+
+lvls <- c("Bilabial", "Labiodental","Interdental","Alveolar","Palatal","Velar","-")
+
+# Conv No Mask ----
+wordTrans_ConvNoMask <- singleSyl %>%
+  dplyr::filter(condition == "ConvNoMask")
+
+C1_confMat_ConvNoMask <- confusion_matrix(wordTrans_ConvNoMask$tC1_place,wordTrans_ConvNoMask$eC1_place)
+C1_ConvNoMask <- plot_confusion_matrix(C1_confMat_ConvNoMask$`Confusion Matrix`[[1]],
+                                     target_col = "Target",
+                                     prediction_col = "Prediction",
+                                     class_order = levels(lvls),
+                                     counts_col = "N",
+                                     add_normalized = T,
+                                     add_row_percentages = F,
+                                     add_col_percentages = F,
+                                     add_zero_shading = F,
+                                     intensity_by = "counts",
+                                     palette = "Blues",
+                                     theme_fn = ggplot2::theme_light) +
+      #ggtitle("Conversational") + theme(plot.title = element_text(hjust = 0.5)) +
+  xlab("Intended Consonant") + ylab("Perceived")
+C1_ConvNoMask
+#ggsave("Data/Plots/V_ConvNoMask.png",plot = V_ConvNoMask, height = 10, width = 10, units = "in")
+
+# Conv Mask ----
+wordTrans_ConvMask <- singleSyl %>%
+  dplyr::filter(condition == "ConvMask")
+C1_confMat_ConvMask <- confusion_matrix(wordTrans_ConvMask$tC1_place,wordTrans_ConvMask$eC1_place)
+C1_ConvMask <- plot_confusion_matrix(C1_confMat_ConvMask$`Confusion Matrix`[[1]],
+                                     target_col = "Target",
+                                     prediction_col = "Prediction",
+                                     class_order = levels(lvls),
+                                     counts_col = "N",
+                                     add_counts = F,
+                                     add_normalized = T,
+                                     add_row_percentages = F,
+                                     add_col_percentages = F,
+                                     add_zero_shading = F,
+                                     intensity_by = "counts",
+                                     palette = "Blues",
+                                     theme_fn = ggplot2::theme_light) +
+    #ggtitle("Conversational with Mask") + theme(plot.title = element_text(hjust = 0.5)) +
+  xlab("Intended Consonant") + ylab("Perceived")
+C1_ConvMask
+#ggsave("Data/Plots/V_ConvMask.png",plot = V_ConvMask, height = 10, width = 10, units = "in")
+
+# Clear Mask ----
+wordTrans_ClearMask <- singleSyl %>%
+  dplyr::filter(condition == "ClearMask")
+C1_confMat_ClearMask <- confusion_matrix(wordTrans_ClearMask$tC1_place,wordTrans_ClearMask$eC1_place)
+C1_ClearMask <- plot_confusion_matrix(C1_confMat_ClearMask$`Confusion Matrix`[[1]],
+                                     target_col = "Target",
+                                     prediction_col = "Prediction",
+                                     class_order = levels(lvls),
+                                     counts_col = "N",
+                                     add_counts = F,
+                                     add_normalized = T,
+                                     add_row_percentages = F,
+                                     add_col_percentages = F,
+                                     add_zero_shading = F,
+                                     intensity_by = "counts",
+                                     palette = "Blues",
+                                     theme_fn = ggplot2::theme_light) +
+    #ggtitle("Conversational with Mask") + theme(plot.title = element_text(hjust = 0.5)) +
+  xlab("Intended Consonant") + ylab("Perceived") +
+  theme(axis.text.x=element_text(angle = 45, hjust = 0))
+C1_ClearMask
+#ggsave("Data/Plots/V_ConvMask.png",plot = V_ConvMask, height = 10, width = 10, units = "in")
+
+# Difference Plot ----
+percent_ConvNoMask <- (C1_confMat_ConvNoMask$Table[[1]]/sum(C1_confMat_ConvNoMask$Table[[1]]))*100
+percent_ConvMask <- (C1_confMat_ConvMask$Table[[1]]/sum(C1_confMat_ConvMask$Table[[1]]))*100
+percent_ClearMask <- (C1_confMat_ClearMask$Table[[1]]/sum(C1_confMat_ClearMask$Table[[1]]))*100
+
+diff_percent_ConvNoMask_ConvMask <- as.data.frame(percent_ConvMask - percent_ConvNoMask) %>%
+  dplyr::rename(N = Freq)
+diff_percent_ConvNoMask_ClearMask <- as.data.frame(percent_ClearMask - percent_ConvNoMask) %>%
+  dplyr::rename(N = Freq)
+diff_percent_ConvMask_ClearMask <- as.data.frame(percent_ClearMask - percent_ConvMask) %>%
+  dplyr::rename(N = Freq)
+
+diff_percent <- rbind(diff_percent_ConvNoMask_ConvMask,
+                      diff_percent_ConvNoMask_ClearMask,
+                      diff_percent_ConvMask_ClearMask)
+
+## ConvNoMask vs. ConvMask ----
+diffData <- diff_percent_ConvNoMask_ConvMask %>%
+         dplyr::mutate(Target = as.factor(Target),
+                       Target = fct_relevel(Target, levels = "Bilabial", "Labiodental","Interdental","Alveolar","Palatal","Velar","-"),
+                       Prediction = as.factor(Prediction),
+                       Prediction = fct_relevel(Prediction, levels = "Bilabial", "Labiodental","Interdental","Alveolar","Palatal","Velar","-"))
+
+pdiff_percent_ConvNoMask_ConvMask <- ggplot(diffData,
+       aes(x = Target, y = Prediction, fill = N)) +
+  geom_tile() +
+  scale_fill_gradient2(limits = c(base::min(diff_percent$N), base::max(diff_percent$N))) +
+  geom_text(data = diffData %>%
+           dplyr::filter(abs(N) > .05),
+         aes(label = sprintf("%1.2f%%", N)), color = "black", size = 2) +
+  coord_fixed() +
+  scale_x_discrete(position = "top") +
+  scale_y_discrete(limits = rev) +
+  theme_bw() +
+  theme(legend.position="none") +
+  xlab(label = "Target") +
+  ylab(label = "Perceived") +
+  theme(axis.text.x=element_text(angle = 45, hjust = 0))
+pdiff_percent_ConvNoMask_ConvMask
+
+ggsave("Data/Plots/C1place_Heatmap_NoMask_ConvMask.png",plot = last_plot(), height = 4, width = 4, units = "in")
+
+## ConvNoMask vs. ClearMask ----
+diffData <- diff_percent_ConvNoMask_ClearMask %>%
+         dplyr::mutate(Target = as.factor(Target),
+                       Target = fct_relevel(Target, levels = "Bilabial", "Labiodental","Interdental","Alveolar","Palatal","Velar","-"),
+                       Prediction = as.factor(Prediction),
+                       Prediction = fct_relevel(Prediction, levels = "Bilabial", "Labiodental","Interdental","Alveolar","Palatal","Velar","-"))
+
+pdiff_percent_ConvNoMask_ClearMask <- ggplot(diffData,
+       aes(x = Target, y = Prediction, fill = N)) +
+  geom_tile() +
+  scale_fill_gradient2(limits = c(base::min(diff_percent$N), base::max(diff_percent$N))) +
+  geom_text(data = diffData %>%
+           dplyr::filter(abs(N) > .05),
+         aes(label = sprintf("%1.2f%%", N)), color = "black", size = 2) +
+  coord_fixed() +
+  scale_x_discrete(position = "top") +
+  scale_y_discrete(limits = rev) +
+  theme_bw() +
+  theme(legend.position="none") +
+  xlab(label = "Target") +
+  ylab(label = "Perceived") +
+  theme(axis.text.x=element_text(angle = 45, hjust = 0))
+pdiff_percent_ConvNoMask_ClearMask
+
+ggsave("Data/Plots/C1place_Heatmap_ConvNoMask_ClearMask.png",plot = last_plot(), height = 4, width = 4, units = "in")
+## ConvMask vs. ClearMask ----
+diffData <- diff_percent_ConvMask_ClearMask %>%
+         dplyr::mutate(Target = as.factor(Target),
+                       Target = fct_relevel(Target, levels = "Bilabial", "Labiodental","Interdental","Alveolar","Palatal","Velar","-"),
+                       Prediction = as.factor(Prediction),
+                       Prediction = fct_relevel(Prediction, levels = "Bilabial", "Labiodental","Interdental","Alveolar","Palatal","Velar","-"))
+
+pdiff_percent_ConvMask_ClearMask <- ggplot(diffData,
+       aes(x = Target, y = Prediction, fill = N)) +
+  geom_tile() +
+  scale_fill_gradient2(limits = c(base::min(diff_percent$N), base::max(diff_percent$N))) +
+  geom_text(data = diffData %>%
+           dplyr::filter(abs(N) > .05),
+         aes(label = sprintf("%1.2f%%", N)), color = "black", size = 2) +
+  coord_fixed() +
+  scale_x_discrete(position = "top") +
+  scale_y_discrete(limits = rev) +
+  theme_bw() +
+  theme(legend.position="none") +
+  xlab(label = "Target") +
+  ylab(label = "Perceived") +
+  theme(axis.text.x=element_text(angle = 45, hjust = 0))
+pdiff_percent_ConvMask_ClearMask
+
+ggsave("Data/Plots/C1place_Heatmap_ConvMask_ClearMask.png",plot = last_plot(), height = 4, width = 4, units = "in")
+
+## Combined ----
+C1_diffPlot <- ggpubr::ggarrange(pdiff_percent_ConvNoMask_ConvMask,pdiff_percent_ConvNoMask_ClearMask, pdiff_percent_ConvMask_ClearMask,
+                                ncol = 3,
+                                nrow = 1)
+
+C1_diffPlot
+ggsave("Data/Plots/C1place_Heatmap_C1Diff.png",plot = last_plot(), height = 4, width = 10, units = "in")
+
+
+```
+
+### C2 - Place
+```{r}
+# C2 ----
+singleSyl <- singleSyl %>%
+  dplyr::mutate(tC2_place = dplyr::recode_factor(tC2_place,
+                                            'bilabial' = 'Bilabial',
+                                            'labiodental' = 'Labiodental',
+                                            'interdental' = 'Interdental',
+                                            'velar' = 'Velar',
+                                            'palatal' = 'Palatal',
+                                            'alveolar' = 'Alveolar')) %>%
+  dplyr::mutate(eC2_place = dplyr::recode_factor(eC2_place,
+                                            'bilabial' = 'Bilabial',
+                                            'labiodental' = 'Labiodental',
+                                            'interdental' = 'Interdental',
+                                            'velar' = 'Velar',
+                                            'palatal' = 'Palatal',
+                                            'alveolar' = 'Alveolar')) %>%
+  dplyr::mutate(tC2_place = fct_relevel(tC2_place, levels = "Bilabial", "Labiodental","Interdental","Alveolar","Palatal","Velar","-")) %>%
+  dplyr::mutate(eC2_place = fct_relevel(eC2_place, levels = "Bilabial", "Labiodental","Interdental","Alveolar","Palatal","Velar","-"))
+
+lvls <- c("Bilabial", "Labiodental","Interdental","Alveolar","Palatal","Velar","-")
+
+# Conv No Mask ----
+wordTrans_ConvNoMask <- singleSyl %>%
+  dplyr::filter(condition == "ConvNoMask")
+
+C2_confMat_ConvNoMask <- confusion_matrix(wordTrans_ConvNoMask$tC2_place,wordTrans_ConvNoMask$eC2_place)
+C2_ConvNoMask <- plot_confusion_matrix(C2_confMat_ConvNoMask$`Confusion Matrix`[[1]],
+                                     target_col = "Target",
+                                     prediction_col = "Prediction",
+                                     class_order = levels(lvls),
+                                     counts_col = "N",
+                                     add_normalized = T,
+                                     add_row_percentages = F,
+                                     add_col_percentages = F,
+                                     add_zero_shading = F,
+                                     intensity_by = "counts",
+                                     palette = "Blues",
+                                     theme_fn = ggplot2::theme_light) +
+      #ggtitle("Conversational") + theme(plot.title = element_text(hjust = 0.5)) +
+  xlab("Intended Consonant") + ylab("Perceived")
+C2_ConvNoMask
+#ggsave("Data/Plots/V_ConvNoMask.png",plot = V_ConvNoMask, height = 10, width = 10, units = "in")
+
+# Conv Mask ----
+wordTrans_ConvMask <- singleSyl %>%
+  dplyr::filter(condition == "ConvMask")
+C2_confMat_ConvMask <- confusion_matrix(wordTrans_ConvMask$tC2_place,wordTrans_ConvMask$eC2_place)
+C2_ConvMask <- plot_confusion_matrix(C2_confMat_ConvMask$`Confusion Matrix`[[1]],
+                                     target_col = "Target",
+                                     prediction_col = "Prediction",
+                                     class_order = levels(lvls),
+                                     counts_col = "N",
+                                     add_counts = F,
+                                     add_normalized = T,
+                                     add_row_percentages = F,
+                                     add_col_percentages = F,
+                                     add_zero_shading = F,
+                                     intensity_by = "counts",
+                                     palette = "Blues",
+                                     theme_fn = ggplot2::theme_light) +
+    #ggtitle("Conversational with Mask") + theme(plot.title = element_text(hjust = 0.5)) +
+  xlab("Intended Consonant") + ylab("Perceived")
+C2_ConvMask
+#ggsave("Data/Plots/V_ConvMask.png",plot = V_ConvMask, height = 10, width = 10, units = "in")
+
+# Clear Mask ----
+wordTrans_ClearMask <- singleSyl %>%
+  dplyr::filter(condition == "ClearMask")
+C2_confMat_ClearMask <- confusion_matrix(wordTrans_ClearMask$tC2_place,wordTrans_ClearMask$eC2_place)
+C2_ClearMask <- plot_confusion_matrix(C2_confMat_ClearMask$`Confusion Matrix`[[1]],
+                                     target_col = "Target",
+                                     prediction_col = "Prediction",
+                                     class_order = levels(lvls),
+                                     counts_col = "N",
+                                     add_counts = F,
+                                     add_normalized = T,
+                                     add_row_percentages = F,
+                                     add_col_percentages = F,
+                                     add_zero_shading = F,
+                                     intensity_by = "counts",
+                                     palette = "Blues",
+                                     theme_fn = ggplot2::theme_light) +
+    #ggtitle("Conversational with Mask") + theme(plot.title = element_text(hjust = 0.5)) +
+  xlab("Intended Consonant") + ylab("Perceived") +
+  theme(axis.text.x=element_text(angle = 45, hjust = 0))
+C2_ClearMask
+#ggsave("Data/Plots/V_ConvMask.png",plot = V_ConvMask, height = 10, width = 10, units = "in")
+
+# Difference Plot ----
+percent_ConvNoMask <- (C2_confMat_ConvNoMask$Table[[1]]/sum(C2_confMat_ConvNoMask$Table[[1]]))*100
+percent_ConvMask <- (C2_confMat_ConvMask$Table[[1]]/sum(C2_confMat_ConvMask$Table[[1]]))*100
+percent_ClearMask <- (C2_confMat_ClearMask$Table[[1]]/sum(C2_confMat_ClearMask$Table[[1]]))*100
+
+diff_percent_ConvNoMask_ConvMask <- as.data.frame(percent_ConvMask - percent_ConvNoMask) %>%
+  dplyr::rename(N = Freq)
+diff_percent_ConvNoMask_ClearMask <- as.data.frame(percent_ClearMask - percent_ConvNoMask) %>%
+  dplyr::rename(N = Freq)
+diff_percent_ConvMask_ClearMask <- as.data.frame(percent_ClearMask - percent_ConvMask) %>%
+  dplyr::rename(N = Freq)
+
+diff_percent <- rbind(diff_percent_ConvNoMask_ConvMask,
+                      diff_percent_ConvNoMask_ClearMask,
+                      diff_percent_ConvMask_ClearMask)
+
+## ConvNoMask vs. ConvMask ----
+diffData <- diff_percent_ConvNoMask_ConvMask %>%
+         dplyr::mutate(Target = as.factor(Target),
+                       Target = fct_relevel(Target, levels = "Bilabial", "Labiodental","Interdental","Alveolar","Palatal","Velar","-"),
+                       Prediction = as.factor(Prediction),
+                       Prediction = fct_relevel(Prediction, levels = "Bilabial", "Labiodental","Interdental","Alveolar","Palatal","Velar","-"))
+
+pdiff_percent_ConvNoMask_ConvMask <- ggplot(diffData,
+       aes(x = Target, y = Prediction, fill = N)) +
+  geom_tile() +
+  scale_fill_gradient2(limits = c(base::min(diff_percent$N), base::max(diff_percent$N))) +
+  geom_text(data = diffData %>%
+           dplyr::filter(abs(N) > .05),
+         aes(label = sprintf("%1.2f%%", N)), color = "black", size = 2) +
+  coord_fixed() +
+  scale_x_discrete(position = "top") +
+  scale_y_discrete(limits = rev) +
+  theme_bw() +
+  theme(legend.position="none") +
+  xlab(label = "Target") +
+  ylab(label = "Perceived") +
+  theme(axis.text.x=element_text(angle = 45, hjust = 0))
+pdiff_percent_ConvNoMask_ConvMask
+
+ggsave("Data/Plots/C2place_Heatmap_NoMask_ConvMask.png",plot = last_plot(), height = 4, width = 4, units = "in")
+
+## ConvNoMask vs. ClearMask ----
+diffData <- diff_percent_ConvNoMask_ClearMask %>%
+         dplyr::mutate(Target = as.factor(Target),
+                       Target = fct_relevel(Target, levels = "Bilabial", "Labiodental","Interdental","Alveolar","Palatal","Velar","-"),
+                       Prediction = as.factor(Prediction),
+                       Prediction = fct_relevel(Prediction, levels = "Bilabial", "Labiodental","Interdental","Alveolar","Palatal","Velar","-"))
+
+pdiff_percent_ConvNoMask_ClearMask <- ggplot(diffData,
+       aes(x = Target, y = Prediction, fill = N)) +
+  geom_tile() +
+  scale_fill_gradient2(limits = c(base::min(diff_percent$N), base::max(diff_percent$N))) +
+  geom_text(data = diffData %>%
+           dplyr::filter(abs(N) > .05),
+         aes(label = sprintf("%1.2f%%", N)), color = "black", size = 2) +
+  coord_fixed() +
+  scale_x_discrete(position = "top") +
+  scale_y_discrete(limits = rev) +
+  theme_bw() +
+  theme(legend.position="none") +
+  xlab(label = "Target") +
+  ylab(label = "Perceived") +
+  theme(axis.text.x=element_text(angle = 45, hjust = 0))
+pdiff_percent_ConvNoMask_ClearMask
+
+ggsave("Data/Plots/C2place_Heatmap_ConvNoMask_ClearMask.png",plot = last_plot(), height = 4, width = 4, units = "in")
+## ConvMask vs. ClearMask ----
+diffData <- diff_percent_ConvMask_ClearMask %>%
+         dplyr::mutate(Target = as.factor(Target),
+                       Target = fct_relevel(Target, levels = "Bilabial", "Labiodental","Interdental","Alveolar","Palatal","Velar","-"),
+                       Prediction = as.factor(Prediction),
+                       Prediction = fct_relevel(Prediction, levels = "Bilabial", "Labiodental","Interdental","Alveolar","Palatal","Velar","-"))
+
+pdiff_percent_ConvMask_ClearMask <- ggplot(diffData,
+       aes(x = Target, y = Prediction, fill = N)) +
+  geom_tile() +
+  scale_fill_gradient2(limits = c(base::min(diff_percent$N), base::max(diff_percent$N))) +
+  geom_text(data = diffData %>%
+           dplyr::filter(abs(N) > .05),
+         aes(label = sprintf("%1.2f%%", N)), color = "black", size = 2) +
+  coord_fixed() +
+  scale_x_discrete(position = "top") +
+  scale_y_discrete(limits = rev) +
+  theme_bw() +
+  theme(legend.position="none") +
+  xlab(label = "Target") +
+  ylab(label = "Perceived") +
+  theme(axis.text.x=element_text(angle = 45, hjust = 0))
+pdiff_percent_ConvMask_ClearMask
+
+ggsave("Data/Plots/C2place_Heatmap_ConvMask_ClearMask.png",plot = last_plot(), height = 4, width = 4, units = "in")
+
+## Combined ----
+C2_diffPlot <- ggpubr::ggarrange(pdiff_percent_ConvNoMask_ConvMask,pdiff_percent_ConvNoMask_ClearMask, pdiff_percent_ConvMask_ClearMask,
+                                ncol = 3,
+                                nrow = 1)
+
+C2_diffPlot
+ggsave("Data/Plots/C2place_Heatmap_C2Diff.png",plot = last_plot(), height = 4, width = 10, units = "in")
+
+
+```
+
+
+### C1 - Voicing
+```{r}
+# C1 ----
+singleSyl <- singleSyl %>%
+  dplyr::mutate(tC1_voicing = dplyr::recode_factor(tC1_voicing,
+                                            'voiced' = 'Voiced',
+                                            'voiceless' = 'Voiceless')) %>%
+  dplyr::mutate(eC1_voicing = dplyr::recode_factor(eC1_voicing,
+                                            'voiced' = 'Voiced',
+                                            'voiceless' = 'Voiceless')) %>%
+  dplyr::mutate(tC1_voicing = fct_relevel(tC1_voicing, levels = "Voiced", "Voiceless","-")) %>%
+  dplyr::mutate(eC1_voicing = fct_relevel(eC1_voicing, levels = "Voiced", "Voiceless","-"))
+
+lvls <- c("Voiced", "Voiceless","-")
+
+# Conv No Mask ----
+wordTrans_ConvNoMask <- singleSyl %>%
+  dplyr::filter(condition == "ConvNoMask")
+
+C1_confMat_ConvNoMask <- confusion_matrix(wordTrans_ConvNoMask$tC1_voicing,wordTrans_ConvNoMask$eC1_voicing)
+C1_ConvNoMask <- plot_confusion_matrix(C1_confMat_ConvNoMask$`Confusion Matrix`[[1]],
+                                     target_col = "Target",
+                                     prediction_col = "Prediction",
+                                     class_order = levels(lvls),
+                                     counts_col = "N",
+                                     add_normalized = T,
+                                     add_row_percentages = F,
+                                     add_col_percentages = F,
+                                     add_zero_shading = F,
+                                     intensity_by = "counts",
+                                     palette = "Blues",
+                                     theme_fn = ggplot2::theme_light) +
+      #ggtitle("Conversational") + theme(plot.title = element_text(hjust = 0.5)) +
+  xlab("Intended Consonant") + ylab("Perceived")
+C1_ConvNoMask
+#ggsave("Data/Plots/V_ConvNoMask.png",plot = V_ConvNoMask, height = 10, width = 10, units = "in")
+
+# Conv Mask ----
+wordTrans_ConvMask <- singleSyl %>%
+  dplyr::filter(condition == "ConvMask")
+C1_confMat_ConvMask <- confusion_matrix(wordTrans_ConvMask$tC1_voicing,wordTrans_ConvMask$eC1_voicing)
+C1_ConvMask <- plot_confusion_matrix(C1_confMat_ConvMask$`Confusion Matrix`[[1]],
+                                     target_col = "Target",
+                                     prediction_col = "Prediction",
+                                     class_order = levels(lvls),
+                                     counts_col = "N",
+                                     add_counts = F,
+                                     add_normalized = T,
+                                     add_row_percentages = F,
+                                     add_col_percentages = F,
+                                     add_zero_shading = F,
+                                     intensity_by = "counts",
+                                     palette = "Blues",
+                                     theme_fn = ggplot2::theme_light) +
+    #ggtitle("Conversational with Mask") + theme(plot.title = element_text(hjust = 0.5)) +
+  xlab("Intended Consonant") + ylab("Perceived")
+C1_ConvMask
+#ggsave("Data/Plots/V_ConvMask.png",plot = V_ConvMask, height = 10, width = 10, units = "in")
+
+# Clear Mask ----
+wordTrans_ClearMask <- singleSyl %>%
+  dplyr::filter(condition == "ClearMask")
+C1_confMat_ClearMask <- confusion_matrix(wordTrans_ClearMask$tC1_voicing,wordTrans_ClearMask$eC1_voicing)
+C1_ClearMask <- plot_confusion_matrix(C1_confMat_ClearMask$`Confusion Matrix`[[1]],
+                                     target_col = "Target",
+                                     prediction_col = "Prediction",
+                                     class_order = levels(lvls),
+                                     counts_col = "N",
+                                     add_counts = F,
+                                     add_normalized = T,
+                                     add_row_percentages = F,
+                                     add_col_percentages = F,
+                                     add_zero_shading = F,
+                                     intensity_by = "counts",
+                                     palette = "Blues",
+                                     theme_fn = ggplot2::theme_light) +
+    #ggtitle("Conversational with Mask") + theme(plot.title = element_text(hjust = 0.5)) +
+  xlab("Intended Consonant") + ylab("Perceived") +
+  theme(axis.text.x=element_text(angle = 45, hjust = 0))
+C1_ClearMask
+#ggsave("Data/Plots/V_ConvMask.png",plot = V_ConvMask, height = 10, width = 10, units = "in")
+
+# Difference Plot ----
+percent_ConvNoMask <- (C1_confMat_ConvNoMask$Table[[1]]/sum(C1_confMat_ConvNoMask$Table[[1]]))*100
+percent_ConvMask <- (C1_confMat_ConvMask$Table[[1]]/sum(C1_confMat_ConvMask$Table[[1]]))*100
+percent_ClearMask <- (C1_confMat_ClearMask$Table[[1]]/sum(C1_confMat_ClearMask$Table[[1]]))*100
+
+diff_percent_ConvNoMask_ConvMask <- as.data.frame(percent_ConvMask - percent_ConvNoMask) %>%
+  dplyr::rename(N = Freq)
+diff_percent_ConvNoMask_ClearMask <- as.data.frame(percent_ClearMask - percent_ConvNoMask) %>%
+  dplyr::rename(N = Freq)
+diff_percent_ConvMask_ClearMask <- as.data.frame(percent_ClearMask - percent_ConvMask) %>%
+  dplyr::rename(N = Freq)
+
+diff_percent <- rbind(diff_percent_ConvNoMask_ConvMask,
+                      diff_percent_ConvNoMask_ClearMask,
+                      diff_percent_ConvMask_ClearMask)
+
+## ConvNoMask vs. ConvMask ----
+diffData <- diff_percent_ConvNoMask_ConvMask %>%
+         dplyr::mutate(Target = as.factor(Target),
+                       Target = fct_relevel(Target, levels = "Voiced", "Voiceless","-"),
+                       Prediction = as.factor(Prediction),
+                       Prediction = fct_relevel(Prediction, levels = "Voiced", "Voiceless","-"))
+
+pdiff_percent_ConvNoMask_ConvMask <- ggplot(diffData,
+       aes(x = Target, y = Prediction, fill = N)) +
+  geom_tile() +
+  scale_fill_gradient2(limits = c(base::min(diff_percent$N), base::max(diff_percent$N))) +
+  geom_text(data = diffData %>%
+           dplyr::filter(abs(N) > .05),
+         aes(label = sprintf("%1.2f%%", N)), color = "black", size = 2) +
+  coord_fixed() +
+  scale_x_discrete(position = "top") +
+  scale_y_discrete(limits = rev) +
+  theme_bw() +
+  theme(legend.position="none") +
+  xlab(label = "Target") +
+  ylab(label = "Perceived") +
+  theme(axis.text.x=element_text(angle = 45, hjust = 0))
+pdiff_percent_ConvNoMask_ConvMask
+
+ggsave("Data/Plots/C1voicing_Heatmap_NoMask_ConvMask.png",plot = last_plot(), height = 4, width = 4, units = "in")
+
+## ConvNoMask vs. ClearMask ----
+diffData <- diff_percent_ConvNoMask_ClearMask %>%
+         dplyr::mutate(Target = as.factor(Target),
+                       Target = fct_relevel(Target, levels = "Voiced", "Voiceless","-"),
+                       Prediction = as.factor(Prediction),
+                       Prediction = fct_relevel(Prediction, levels = "Voiced", "Voiceless","-"))
+
+pdiff_percent_ConvNoMask_ClearMask <- ggplot(diffData,
+       aes(x = Target, y = Prediction, fill = N)) +
+  geom_tile() +
+  scale_fill_gradient2(limits = c(base::min(diff_percent$N), base::max(diff_percent$N))) +
+  geom_text(data = diffData %>%
+           dplyr::filter(abs(N) > .05),
+         aes(label = sprintf("%1.2f%%", N)), color = "black", size = 2) +
+  coord_fixed() +
+  scale_x_discrete(position = "top") +
+  scale_y_discrete(limits = rev) +
+  theme_bw() +
+  theme(legend.position="none") +
+  xlab(label = "Target") +
+  ylab(label = "Perceived") +
+  theme(axis.text.x=element_text(angle = 45, hjust = 0))
+pdiff_percent_ConvNoMask_ClearMask
+
+ggsave("Data/Plots/C1voicing_Heatmap_ConvNoMask_ClearMask.png",plot = last_plot(), height = 4, width = 4, units = "in")
+## ConvMask vs. ClearMask ----
+diffData <- diff_percent_ConvMask_ClearMask %>%
+         dplyr::mutate(Target = as.factor(Target),
+                       Target = fct_relevel(Target, levels = "Voiced", "Voiceless","-"),
+                       Prediction = as.factor(Prediction),
+                       Prediction = fct_relevel(Prediction, levels = "Voiced", "Voiceless","-"))
+
+pdiff_percent_ConvMask_ClearMask <- ggplot(diffData,
+       aes(x = Target, y = Prediction, fill = N)) +
+  geom_tile() +
+  scale_fill_gradient2(limits = c(base::min(diff_percent$N), base::max(diff_percent$N))) +
+  geom_text(data = diffData %>%
+           dplyr::filter(abs(N) > .05),
+         aes(label = sprintf("%1.2f%%", N)), color = "black", size = 2) +
+  coord_fixed() +
+  scale_x_discrete(position = "top") +
+  scale_y_discrete(limits = rev) +
+  theme_bw() +
+  theme(legend.position="none") +
+  xlab(label = "Target") +
+  ylab(label = "Perceived") +
+  theme(axis.text.x=element_text(angle = 45, hjust = 0))
+pdiff_percent_ConvMask_ClearMask
+
+ggsave("Data/Plots/C1voicing_Heatmap_ConvMask_ClearMask.png",plot = last_plot(), height = 4, width = 4, units = "in")
+
+## Combined ----
+C1_diffPlot <- ggpubr::ggarrange(pdiff_percent_ConvNoMask_ConvMask,pdiff_percent_ConvNoMask_ClearMask, pdiff_percent_ConvMask_ClearMask,
+                                ncol = 3,
+                                nrow = 1)
+
+C1_diffPlot
+ggsave("Data/Plots/C1voicing_Heatmap_C1Diff.png",plot = last_plot(), height = 4, width = 10, units = "in")
+
+
+```
+
+### C2 - Voicing
+```{r}
+# C2 ----
+singleSyl <- singleSyl %>%
+  dplyr::mutate(tC2_voicing = dplyr::recode_factor(tC2_voicing,
+                                            'voiced' = 'Voiced',
+                                            'voiceless' = 'Voiceless')) %>%
+  dplyr::mutate(eC2_voicing = dplyr::recode_factor(eC2_voicing,
+                                            'voiced' = 'Voiced',
+                                            'voiceless' = 'Voiceless')) %>%
+  dplyr::mutate(tC2_voicing = fct_relevel(tC2_voicing, levels = "Voiced", "Voiceless","-")) %>%
+  dplyr::mutate(eC2_voicing = fct_relevel(eC2_voicing, levels = "Voiced", "Voiceless","-"))
+
+lvls <- c("Voiced", "Voiceless","-")
+
+# Conv No Mask ----
+wordTrans_ConvNoMask <- singleSyl %>%
+  dplyr::filter(condition == "ConvNoMask")
+
+C2_confMat_ConvNoMask <- confusion_matrix(wordTrans_ConvNoMask$tC2_voicing,wordTrans_ConvNoMask$eC2_voicing)
+C2_ConvNoMask <- plot_confusion_matrix(C2_confMat_ConvNoMask$`Confusion Matrix`[[1]],
+                                     target_col = "Target",
+                                     prediction_col = "Prediction",
+                                     class_order = levels(lvls),
+                                     counts_col = "N",
+                                     add_normalized = T,
+                                     add_row_percentages = F,
+                                     add_col_percentages = F,
+                                     add_zero_shading = F,
+                                     intensity_by = "counts",
+                                     palette = "Blues",
+                                     theme_fn = ggplot2::theme_light) +
+      #ggtitle("Conversational") + theme(plot.title = element_text(hjust = 0.5)) +
+  xlab("Intended Consonant") + ylab("Perceived")
+C2_ConvNoMask
+#ggsave("Data/Plots/V_ConvNoMask.png",plot = V_ConvNoMask, height = 10, width = 10, units = "in")
+
+# Conv Mask ----
+wordTrans_ConvMask <- singleSyl %>%
+  dplyr::filter(condition == "ConvMask")
+C2_confMat_ConvMask <- confusion_matrix(wordTrans_ConvMask$tC2_voicing,wordTrans_ConvMask$eC2_voicing)
+C2_ConvMask <- plot_confusion_matrix(C2_confMat_ConvMask$`Confusion Matrix`[[1]],
+                                     target_col = "Target",
+                                     prediction_col = "Prediction",
+                                     class_order = levels(lvls),
+                                     counts_col = "N",
+                                     add_counts = F,
+                                     add_normalized = T,
+                                     add_row_percentages = F,
+                                     add_col_percentages = F,
+                                     add_zero_shading = F,
+                                     intensity_by = "counts",
+                                     palette = "Blues",
+                                     theme_fn = ggplot2::theme_light) +
+    #ggtitle("Conversational with Mask") + theme(plot.title = element_text(hjust = 0.5)) +
+  xlab("Intended Consonant") + ylab("Perceived")
+C2_ConvMask
+#ggsave("Data/Plots/V_ConvMask.png",plot = V_ConvMask, height = 10, width = 10, units = "in")
+
+# Clear Mask ----
+wordTrans_ClearMask <- singleSyl %>%
+  dplyr::filter(condition == "ClearMask")
+C2_confMat_ClearMask <- confusion_matrix(wordTrans_ClearMask$tC2_voicing,wordTrans_ClearMask$eC2_voicing)
+C2_ClearMask <- plot_confusion_matrix(C2_confMat_ClearMask$`Confusion Matrix`[[1]],
+                                     target_col = "Target",
+                                     prediction_col = "Prediction",
+                                     class_order = levels(lvls),
+                                     counts_col = "N",
+                                     add_counts = F,
+                                     add_normalized = T,
+                                     add_row_percentages = F,
+                                     add_col_percentages = F,
+                                     add_zero_shading = F,
+                                     intensity_by = "counts",
+                                     palette = "Blues",
+                                     theme_fn = ggplot2::theme_light) +
+    #ggtitle("Conversational with Mask") + theme(plot.title = element_text(hjust = 0.5)) +
+  xlab("Intended Consonant") + ylab("Perceived") +
+  theme(axis.text.x=element_text(angle = 45, hjust = 0))
+C2_ClearMask
+#ggsave("Data/Plots/V_ConvMask.png",plot = V_ConvMask, height = 10, width = 10, units = "in")
+
+# Difference Plot ----
+percent_ConvNoMask <- (C2_confMat_ConvNoMask$Table[[1]]/sum(C2_confMat_ConvNoMask$Table[[1]]))*100
+percent_ConvMask <- (C2_confMat_ConvMask$Table[[1]]/sum(C2_confMat_ConvMask$Table[[1]]))*100
+percent_ClearMask <- (C2_confMat_ClearMask$Table[[1]]/sum(C2_confMat_ClearMask$Table[[1]]))*100
+
+diff_percent_ConvNoMask_ConvMask <- as.data.frame(percent_ConvMask - percent_ConvNoMask) %>%
+  dplyr::rename(N = Freq)
+diff_percent_ConvNoMask_ClearMask <- as.data.frame(percent_ClearMask - percent_ConvNoMask) %>%
+  dplyr::rename(N = Freq)
+diff_percent_ConvMask_ClearMask <- as.data.frame(percent_ClearMask - percent_ConvMask) %>%
+  dplyr::rename(N = Freq)
+
+diff_percent <- rbind(diff_percent_ConvNoMask_ConvMask,
+                      diff_percent_ConvNoMask_ClearMask,
+                      diff_percent_ConvMask_ClearMask)
+
+## ConvNoMask vs. ConvMask ----
+diffData <- diff_percent_ConvNoMask_ConvMask %>%
+         dplyr::mutate(Target = as.factor(Target),
+                       Target = fct_relevel(Target, levels = "Voiced", "Voiceless","-"),
+                       Prediction = as.factor(Prediction),
+                       Prediction = fct_relevel(Prediction, levels = "Voiced", "Voiceless","-"))
+
+pdiff_percent_ConvNoMask_ConvMask <- ggplot(diffData,
+       aes(x = Target, y = Prediction, fill = N)) +
+  geom_tile() +
+  scale_fill_gradient2(limits = c(base::min(diff_percent$N), base::max(diff_percent$N))) +
+  geom_text(data = diffData %>%
+           dplyr::filter(abs(N) > .05),
+         aes(label = sprintf("%1.2f%%", N)), color = "black", size = 2) +
+  coord_fixed() +
+  scale_x_discrete(position = "top") +
+  scale_y_discrete(limits = rev) +
+  theme_bw() +
+  theme(legend.position="none") +
+  xlab(label = "Target") +
+  ylab(label = "Perceived") +
+  theme(axis.text.x=element_text(angle = 45, hjust = 0))
+pdiff_percent_ConvNoMask_ConvMask
+
+ggsave("Data/Plots/C2voicing_Heatmap_NoMask_ConvMask.png",plot = last_plot(), height = 4, width = 4, units = "in")
+
+## ConvNoMask vs. ClearMask ----
+diffData <- diff_percent_ConvNoMask_ClearMask %>%
+         dplyr::mutate(Target = as.factor(Target),
+                       Target = fct_relevel(Target, levels = "Voiced", "Voiceless","-"),
+                       Prediction = as.factor(Prediction),
+                       Prediction = fct_relevel(Prediction, levels = "Voiced", "Voiceless","-"))
+
+pdiff_percent_ConvNoMask_ClearMask <- ggplot(diffData,
+       aes(x = Target, y = Prediction, fill = N)) +
+  geom_tile() +
+  scale_fill_gradient2(limits = c(base::min(diff_percent$N), base::max(diff_percent$N))) +
+  geom_text(data = diffData %>%
+           dplyr::filter(abs(N) > .05),
+         aes(label = sprintf("%1.2f%%", N)), color = "black", size = 2) +
+  coord_fixed() +
+  scale_x_discrete(position = "top") +
+  scale_y_discrete(limits = rev) +
+  theme_bw() +
+  theme(legend.position="none") +
+  xlab(label = "Target") +
+  ylab(label = "Perceived") +
+  theme(axis.text.x=element_text(angle = 45, hjust = 0))
+pdiff_percent_ConvNoMask_ClearMask
+
+ggsave("Data/Plots/C2voicing_Heatmap_ConvNoMask_ClearMask.png",plot = last_plot(), height = 4, width = 4, units = "in")
+## ConvMask vs. ClearMask ----
+diffData <- diff_percent_ConvMask_ClearMask %>%
+         dplyr::mutate(Target = as.factor(Target),
+                       Target = fct_relevel(Target, levels = "Voiced", "Voiceless","-"),
+                       Prediction = as.factor(Prediction),
+                       Prediction = fct_relevel(Prediction, levels = "Voiced", "Voiceless","-"))
+
+pdiff_percent_ConvMask_ClearMask <- ggplot(diffData,
+       aes(x = Target, y = Prediction, fill = N)) +
+  geom_tile() +
+  scale_fill_gradient2(limits = c(base::min(diff_percent$N), base::max(diff_percent$N))) +
+  geom_text(data = diffData %>%
+           dplyr::filter(abs(N) > .05),
+         aes(label = sprintf("%1.2f%%", N)), color = "black", size = 2) +
+  coord_fixed() +
+  scale_x_discrete(position = "top") +
+  scale_y_discrete(limits = rev) +
+  theme_bw() +
+  theme(legend.position="none") +
+  xlab(label = "Target") +
+  ylab(label = "Perceived") +
+  theme(axis.text.x=element_text(angle = 45, hjust = 0))
+pdiff_percent_ConvMask_ClearMask
+
+ggsave("Data/Plots/C2voicing_Heatmap_ConvMask_ClearMask.png",plot = last_plot(), height = 4, width = 4, units = "in")
+
+## Combined ----
+C2_diffPlot <- ggpubr::ggarrange(pdiff_percent_ConvNoMask_ConvMask,pdiff_percent_ConvNoMask_ClearMask, pdiff_percent_ConvMask_ClearMask,
+                                ncol = 3,
+                                nrow = 1)
+
+C2_diffPlot
+ggsave("Data/Plots/C2voicing_Heatmap_C2Diff.png",plot = last_plot(), height = 4, width = 10, units = "in")
+
+
+```
